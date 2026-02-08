@@ -12,10 +12,16 @@ from config import (
     MIN_DATA_POINTS,
     STOCK_LIST,
 )
-from data import fetch_stock_data
+from data import fetch_stock_data, fetch_fundamental_data
 from model import predict_direction
 
 app = FastAPI(title="Stock Direction Predictor")
+
+
+@app.get("/stocks")
+def get_stocks():
+    """Return list of available stocks for prediction."""
+    return {"stocks": STOCK_LIST}
 
 cors_origins = ["http://localhost:5173"]
 if os.environ.get("FRONTEND_URL"):
@@ -43,8 +49,8 @@ def predict(
     if cached is not None:
         return cached
 
-    # Fetch stock data
-    df = fetch_stock_data(ticker)
+    # Fetch stock data (uses more history for longer predictions)
+    df = fetch_stock_data(ticker, days)
     if df is None or len(df) == 0:
         raise HTTPException(status_code=404, detail=f"No data found for ticker: {ticker}")
 
@@ -55,17 +61,30 @@ def predict(
             detail=f"Insufficient data for training. Need {MIN_DATA_POINTS} data points, got {len(df)}",
         )
 
-    # Make prediction
-    result = predict_direction(df, days)
+    # Fetch fundamental data (earnings, analyst recommendations, etc.)
+    fundamentals = fetch_fundamental_data(ticker)
+
+    # Make prediction with both technical and fundamental data
+    result = predict_direction(df, days, fundamentals)
     if result is None:
         raise HTTPException(status_code=500, detail="Prediction failed")
 
-    direction, confidence = result
+    direction, confidence, predicted_return = result
+    latest_price = round(float(df["close"].iloc[-1]), 2)
+    # Align predicted return sign with direction for consistency
+    aligned_return = abs(predicted_return) if direction == "up" else -abs(predicted_return)
+    predicted_price = round(latest_price * (1 + aligned_return), 2)
+    # Get stock name from fundamentals
+    name = fundamentals.get("name", ticker) if fundamentals else ticker
     response = {
         "ticker": ticker,
+        "name": name,
         "days": days,
         "direction": direction,
         "confidence": round(confidence, 4),
+        "latest_price": latest_price,
+        "predicted_price": predicted_price,
+        "predicted_change": round(aligned_return * 100, 2),  # As percentage
     }
 
     # Cache the result
@@ -77,17 +96,28 @@ def predict(
 def _predict_single(ticker: str, days: int) -> Optional[dict]:
     """Helper to predict a single stock, returns None on failure."""
     try:
-        df = fetch_stock_data(ticker)
+        df = fetch_stock_data(ticker, days)
         if df is None or len(df) < MIN_DATA_POINTS:
             return None
-        result = predict_direction(df, days)
+        fundamentals = fetch_fundamental_data(ticker)
+        result = predict_direction(df, days, fundamentals)
         if result is None:
             return None
-        direction, confidence = result
+        direction, confidence, predicted_return = result
+        latest_price = round(float(df["close"].iloc[-1]), 2)
+        # Align predicted return sign with direction for consistency
+        aligned_return = abs(predicted_return) if direction == "up" else -abs(predicted_return)
+        predicted_price = round(latest_price * (1 + aligned_return), 2)
+        # Get stock name from fundamentals
+        name = fundamentals.get("name", ticker) if fundamentals else ticker
         return {
             "ticker": ticker,
+            "name": name,
             "direction": direction,
             "confidence": round(confidence, 4),
+            "latest_price": latest_price,
+            "predicted_price": predicted_price,
+            "predicted_change": round(aligned_return * 100, 2),
         }
     except Exception:
         return None
@@ -122,7 +152,11 @@ def screener(
             elif result["direction"] == "up" and result["confidence"] >= min_confidence:
                 matches.append({
                     "ticker": result["ticker"],
+                    "name": result["name"],
                     "confidence": result["confidence"],
+                    "latest_price": result["latest_price"],
+                    "predicted_price": result["predicted_price"],
+                    "predicted_change": result["predicted_change"],
                 })
 
     # Sort by confidence descending
