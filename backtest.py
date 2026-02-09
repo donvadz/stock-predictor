@@ -619,6 +619,271 @@ def run_screener_backtest(
         "top_stocks": top_stocks,
         "best_picks": best_picks[:5],
         "worst_picks": list(reversed(worst_picks[:5])),
+        # Raw data for caching and recomputation with different period counts
+        "_raw_data": {
+            "all_picks": all_picks,
+            "all_baseline": all_baseline,
+            "period_pick_counts": period_pick_counts,
+            "stocks_tested": stocks_tested,
+            "stocks_failed": stocks_failed,
+        },
+    }
+
+
+def compute_screener_metrics_from_raw(
+    raw_data: Dict,
+    target_periods: int,
+) -> Optional[Dict]:
+    """
+    Recompute screener backtest metrics from cached raw data for a target period count.
+
+    This enables caching raw data for 100 periods and instantly recomputing
+    metrics for 30, 50, etc. periods without re-running the full backtest.
+
+    Args:
+        raw_data: Dictionary with all_picks, all_baseline, period_pick_counts, etc.
+        target_periods: Number of periods to use (takes most recent N periods)
+
+    Returns:
+        Dictionary with computed metrics, or None if insufficient data
+    """
+    all_picks = raw_data["all_picks"]
+    all_baseline = raw_data["all_baseline"]
+    period_pick_counts = raw_data["period_pick_counts"]
+    stocks_tested = raw_data["stocks_tested"]
+    stocks_failed = raw_data["stocks_failed"]
+
+    # Get all unique period IDs and sort to find most recent N
+    # Period IDs are like "period_1", "period_2", etc.
+    all_period_ids = set()
+    for pick in all_picks:
+        all_period_ids.add(pick["period_id"])
+    for period_id in period_pick_counts.keys():
+        all_period_ids.add(period_id)
+
+    # Sort periods by their number (extract number from "period_X")
+    sorted_periods = sorted(
+        all_period_ids,
+        key=lambda x: int(x.split("_")[1]),
+        reverse=True  # Most recent first
+    )
+
+    # Take most recent N periods
+    target_period_ids = set(sorted_periods[:target_periods])
+
+    if len(target_period_ids) == 0:
+        return None
+
+    # Filter picks and baseline to target periods
+    filtered_picks = [p for p in all_picks if p["period_id"] in target_period_ids]
+
+    # Filter period_pick_counts
+    filtered_period_counts = {
+        k: v for k, v in period_pick_counts.items()
+        if k in target_period_ids
+    }
+
+    if len(filtered_picks) == 0:
+        return None
+
+    # Now compute all metrics from filtered data (same logic as run_screener_backtest)
+    df_picks = pd.DataFrame(filtered_picks)
+
+    # --- BASIC METRICS ---
+    total_picks = len(df_picks)
+    winning_picks = df_picks["direction_correct"].sum()
+    win_rate = winning_picks / total_picks
+    avg_pick_return = df_picks["actual_return"].mean()
+
+    # For baseline, we don't have period_id, so we use all baseline data
+    # This is an approximation but acceptable for quick recomputation
+    df_baseline = pd.DataFrame(all_baseline) if all_baseline else pd.DataFrame()
+    avg_baseline_return = df_baseline["return"].mean() if len(df_baseline) > 0 else 0
+
+    # --- 1. CONFIDENCE BUCKET ANALYSIS ---
+    confidence_buckets = []
+    bucket_ranges = [
+        ("70-75%", 0.70, 0.75),
+        ("75-80%", 0.75, 0.80),
+        ("80%+", 0.80, 1.01),
+    ]
+    for bucket_name, low, high in bucket_ranges:
+        bucket_df = df_picks[(df_picks["confidence"] >= low) & (df_picks["confidence"] < high)]
+        if len(bucket_df) > 0:
+            bucket_win_rate = bucket_df["direction_correct"].mean()
+            bucket_avg_return = bucket_df["actual_return"].mean()
+            bucket_worst = bucket_df["actual_return"].min()
+            confidence_buckets.append({
+                "bucket": bucket_name,
+                "trades": int(len(bucket_df)),
+                "win_rate": round(float(bucket_win_rate) * 100, 1),
+                "avg_return": round(float(bucket_avg_return) * 100, 2),
+                "worst_trade": round(float(bucket_worst) * 100, 2),
+            })
+
+    # --- 2. DRAWDOWN & RISK METRICS ---
+    returns_list = df_picks["actual_return"].tolist()
+    worst_single_trade = min(returns_list)
+
+    # Consecutive loss streaks
+    loss_streaks = []
+    current_streak = 0
+    current_streak_return = 0
+    for ret in returns_list:
+        if ret < 0:
+            current_streak += 1
+            current_streak_return += ret
+        else:
+            if current_streak >= 2:
+                loss_streaks.append({
+                    "length": current_streak,
+                    "total_loss": current_streak_return
+                })
+            current_streak = 0
+            current_streak_return = 0
+    if current_streak >= 2:
+        loss_streaks.append({"length": current_streak, "total_loss": current_streak_return})
+
+    worst_streak = max(loss_streaks, key=lambda x: abs(x["total_loss"])) if loss_streaks else None
+
+    # Max drawdown
+    cumulative = 0
+    peak = 0
+    max_dd = 0
+    for ret in returns_list:
+        cumulative += ret
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
+        if dd > max_dd:
+            max_dd = dd
+
+    risk_metrics = {
+        "worst_single_trade": round(float(worst_single_trade) * 100, 2),
+        "worst_streak_length": worst_streak["length"] if worst_streak else 0,
+        "worst_streak_loss": round(float(worst_streak["total_loss"]) * 100, 2) if worst_streak else 0,
+        "max_drawdown": round(float(max_dd) * 100, 2),
+    }
+
+    # --- 3. REGIME SEGMENTATION ---
+    median_vol = df_picks["volatility"].median()
+    high_vol = df_picks[df_picks["volatility"] >= median_vol]
+    low_vol = df_picks[df_picks["volatility"] < median_vol]
+
+    picks_with_spy = df_picks[df_picks["spy_return"].notna()]
+    if len(picks_with_spy) > 0:
+        up_trend = picks_with_spy[picks_with_spy["spy_return"] > 0.01]
+        down_trend = picks_with_spy[picks_with_spy["spy_return"] < -0.01]
+        sideways = picks_with_spy[(picks_with_spy["spy_return"] >= -0.01) & (picks_with_spy["spy_return"] <= 0.01)]
+    else:
+        up_trend = pd.DataFrame()
+        down_trend = pd.DataFrame()
+        sideways = pd.DataFrame()
+
+    def regime_stats(df_regime, name):
+        if len(df_regime) == 0:
+            return None
+        return {
+            "regime": name,
+            "trades": int(len(df_regime)),
+            "win_rate": round(float(df_regime["direction_correct"].mean()) * 100, 1),
+            "avg_return": round(float(df_regime["actual_return"].mean()) * 100, 2),
+        }
+
+    regime_analysis = {
+        "volatility": [
+            r for r in [
+                regime_stats(high_vol, "High Volatility"),
+                regime_stats(low_vol, "Low Volatility"),
+            ] if r is not None
+        ],
+        "market_trend": [
+            r for r in [
+                regime_stats(up_trend, "Bull Market (SPY +1%+)"),
+                regime_stats(sideways, "Sideways (-1% to +1%)"),
+                regime_stats(down_trend, "Bear Market (SPY -1%+)"),
+            ] if r is not None
+        ],
+    }
+
+    # --- 4. MARKET-RELATIVE VALIDATION ---
+    picks_with_market = df_picks[df_picks["beat_market"].notna()]
+    market_comparison = None
+    if len(picks_with_market) > 0:
+        beat_market_count = picks_with_market["beat_market"].sum()
+        avg_alpha = (picks_with_market["actual_return"] - picks_with_market["spy_return"]).mean()
+        market_comparison = {
+            "picks_with_benchmark": int(len(picks_with_market)),
+            "beat_market_count": int(beat_market_count),
+            "beat_market_pct": round(float(beat_market_count / len(picks_with_market)) * 100, 1),
+            "avg_alpha": round(float(avg_alpha) * 100, 2),
+        }
+
+    # --- 5. NO-TRADE FREQUENCY ---
+    total_periods = len(filtered_period_counts)
+    periods_with_picks = sum(1 for count in filtered_period_counts.values() if count > 0)
+    periods_without_picks = total_periods - periods_with_picks
+    avg_picks_per_period = total_picks / total_periods if total_periods > 0 else 0
+
+    no_trade_analysis = {
+        "total_periods": total_periods,
+        "periods_with_picks": periods_with_picks,
+        "periods_without_picks": periods_without_picks,
+        "no_trade_pct": round(float(periods_without_picks / total_periods) * 100, 1) if total_periods > 0 else 0,
+        "avg_picks_per_period": round(float(avg_picks_per_period), 2),
+    }
+
+    # --- TOP/BOTTOM STOCKS ---
+    per_stock = df_picks.groupby("ticker").agg({
+        "actual_return": ["mean", "count"],
+        "direction_correct": "mean"
+    }).round(4)
+    per_stock.columns = ["avg_return", "num_picks", "win_rate"]
+    per_stock = per_stock.sort_values("avg_return", ascending=False)
+
+    top_stocks = []
+    for ticker, row in per_stock.head(10).iterrows():
+        top_stocks.append({
+            "ticker": ticker,
+            "avg_return": round(float(row["avg_return"]) * 100, 2),
+            "num_picks": int(row["num_picks"]),
+            "win_rate": round(float(row["win_rate"]) * 100, 1),
+        })
+
+    # Best and worst individual picks
+    df_picks_sorted = df_picks.sort_values("actual_return", ascending=False)
+    best_picks = df_picks_sorted.head(5).to_dict("records")
+    worst_picks = df_picks_sorted.tail(5).to_dict("records")
+
+    # Convert numpy types
+    for pick in best_picks + worst_picks:
+        pick["confidence"] = float(pick["confidence"])
+        pick["actual_return"] = float(pick["actual_return"])
+        pick["direction_correct"] = bool(pick["direction_correct"])
+        pick.pop("period_id", None)
+        pick.pop("volatility", None)
+        pick.pop("spy_return", None)
+        pick.pop("beat_market", None)
+
+    return {
+        "summary": {
+            "stocks_tested": stocks_tested,
+            "stocks_failed": stocks_failed,
+            "total_picks": int(total_picks),
+            "winning_picks": int(winning_picks),
+            "win_rate": round(float(win_rate) * 100, 2),
+            "avg_pick_return": round(float(avg_pick_return) * 100, 2),
+            "avg_baseline_return": round(float(avg_baseline_return) * 100, 2),
+            "alpha_vs_baseline": round(float(avg_pick_return - avg_baseline_return) * 100, 2),
+        },
+        "confidence_buckets": confidence_buckets,
+        "risk_metrics": risk_metrics,
+        "regime_analysis": regime_analysis,
+        "market_comparison": market_comparison,
+        "no_trade_analysis": no_trade_analysis,
+        "top_stocks": top_stocks,
+        "best_picks": best_picks[:5],
+        "worst_picks": list(reversed(worst_picks[:5])),
     }
 
 
@@ -695,6 +960,165 @@ def _compute_metrics_from_picks(picks_list: List[Dict], spy_returns: Dict) -> Di
         "worst_streak_loss": round(float(worst_streak["total_loss"]) * 100, 2) if worst_streak else 0,
         "max_drawdown": round(float(max_dd) * 100, 2),
         "beat_spy_pct": round(float(beat_spy_pct) * 100, 1),
+    }
+
+
+def compute_regime_metrics_from_raw(
+    raw_data: Dict,
+    target_periods: int,
+) -> Optional[Dict]:
+    """
+    Recompute regime-gated backtest metrics from cached raw data for a target period count.
+
+    Args:
+        raw_data: Dictionary with picks and period data
+        target_periods: Number of periods to use (takes most recent N periods)
+
+    Returns:
+        Dictionary with computed metrics, or None if insufficient data
+    """
+    picks_no_gate = raw_data["picks_no_gate"]
+    picks_suppressed = raw_data["picks_suppressed"]
+    picks_high_conf = raw_data["picks_high_conf"]
+    period_regimes = raw_data["period_regimes"]
+    stocks_tested = raw_data["stocks_tested"]
+    stocks_failed = raw_data["stocks_failed"]
+    NORMAL_CONFIDENCE = raw_data["normal_confidence"]
+    BEAR_CONFIDENCE = raw_data["bear_confidence"]
+    BEAR_THRESHOLD = raw_data["bear_threshold"]
+
+    # Get all unique periods and sort to find most recent N
+    all_period_ids = set()
+    for pick in picks_no_gate + picks_suppressed + picks_high_conf:
+        all_period_ids.add(pick["period_id"])
+    for regime in period_regimes:
+        all_period_ids.add(f"period_{regime['period']}")
+
+    sorted_periods = sorted(
+        all_period_ids,
+        key=lambda x: int(x.split("_")[1]),
+        reverse=True
+    )
+
+    target_period_ids = set(sorted_periods[:target_periods])
+
+    if len(target_period_ids) == 0:
+        return None
+
+    # Filter picks to target periods
+    filtered_no_gate = [p for p in picks_no_gate if p["period_id"] in target_period_ids]
+    filtered_suppressed = [p for p in picks_suppressed if p["period_id"] in target_period_ids]
+    filtered_high_conf = [p for p in picks_high_conf if p["period_id"] in target_period_ids]
+
+    # Filter period_regimes
+    filtered_regimes = [r for r in period_regimes if f"period_{r['period']}" in target_period_ids]
+
+    # Compute metrics for each mode
+    spy_returns = {}
+    metrics_no_gate = _compute_metrics_from_picks(filtered_no_gate, spy_returns)
+    metrics_suppressed = _compute_metrics_from_picks(filtered_suppressed, spy_returns)
+    metrics_high_conf = _compute_metrics_from_picks(filtered_high_conf, spy_returns)
+
+    # Count bear market periods
+    total_periods = len(filtered_regimes)
+    bear_periods = sum(1 for p in filtered_regimes if p["is_bear"])
+    normal_periods = total_periods - bear_periods
+
+    # Build comparison table
+    comparison = {
+        "no_gate": {
+            "mode": "No Regime Gate (Baseline)",
+            **metrics_no_gate,
+        },
+        "suppressed": {
+            "mode": "Bear Mode: Suppressed",
+            **metrics_suppressed,
+        },
+        "high_confidence": {
+            "mode": "Bear Mode: 80% Confidence",
+            **metrics_high_conf,
+        },
+    }
+
+    # Calculate improvements vs baseline
+    baseline_trades = metrics_no_gate["total_trades"]
+    baseline_dd = metrics_no_gate["max_drawdown"]
+
+    if baseline_trades > 0:
+        comparison["suppressed"]["trade_reduction"] = round(
+            (1 - metrics_suppressed["total_trades"] / baseline_trades) * 100, 1
+        )
+        comparison["high_confidence"]["trade_reduction"] = round(
+            (1 - metrics_high_conf["total_trades"] / baseline_trades) * 100, 1
+        )
+    else:
+        comparison["suppressed"]["trade_reduction"] = 0
+        comparison["high_confidence"]["trade_reduction"] = 0
+
+    if baseline_dd > 0:
+        comparison["suppressed"]["drawdown_improvement"] = round(
+            (1 - metrics_suppressed["max_drawdown"] / baseline_dd) * 100, 1
+        )
+        comparison["high_confidence"]["drawdown_improvement"] = round(
+            (1 - metrics_high_conf["max_drawdown"] / baseline_dd) * 100, 1
+        )
+    else:
+        comparison["suppressed"]["drawdown_improvement"] = 0
+        comparison["high_confidence"]["drawdown_improvement"] = 0
+
+    comparison["no_gate"]["trade_reduction"] = 0
+    comparison["no_gate"]["drawdown_improvement"] = 0
+
+    # Interpretation
+    interpretation = []
+
+    if metrics_suppressed["max_drawdown"] < baseline_dd:
+        interpretation.append(
+            f"Suppressed mode reduces max drawdown from {baseline_dd}% to {metrics_suppressed['max_drawdown']}%."
+        )
+
+    if metrics_high_conf["max_drawdown"] < baseline_dd:
+        interpretation.append(
+            f"80% confidence mode reduces max drawdown from {baseline_dd}% to {metrics_high_conf['max_drawdown']}%."
+        )
+
+    if metrics_suppressed["total_trades"] > 0 and metrics_suppressed["win_rate"] > metrics_no_gate["win_rate"]:
+        interpretation.append(
+            f"Suppressed mode improves win rate from {metrics_no_gate['win_rate']}% to {metrics_suppressed['win_rate']}%."
+        )
+
+    if metrics_high_conf["total_trades"] > 0 and metrics_high_conf["win_rate"] > metrics_no_gate["win_rate"]:
+        interpretation.append(
+            f"80% confidence mode improves win rate from {metrics_no_gate['win_rate']}% to {metrics_high_conf['win_rate']}%."
+        )
+
+    if bear_periods > 0:
+        interpretation.append(
+            f"{bear_periods} of {total_periods} periods were in bear market regime (SPY trailing < -1%)."
+        )
+
+    if metrics_suppressed["total_trades"] < baseline_trades:
+        interpretation.append(
+            f"Trade-off: Suppressed mode reduces trades by {comparison['suppressed']['trade_reduction']}%, "
+            f"potentially missing some profitable opportunities."
+        )
+
+    return {
+        "summary": {
+            "stocks_tested": stocks_tested,
+            "stocks_failed": stocks_failed,
+            "total_periods": total_periods,
+            "bear_periods": bear_periods,
+            "normal_periods": normal_periods,
+            "bear_threshold": f"SPY trailing < {BEAR_THRESHOLD * 100}%",
+            "normal_confidence": f"{NORMAL_CONFIDENCE * 100}%",
+            "bear_confidence": f"{BEAR_CONFIDENCE * 100}%",
+        },
+        "comparison": comparison,
+        "interpretation": interpretation,
+        "period_breakdown": {
+            "bear_periods_pct": round(bear_periods / total_periods * 100, 1) if total_periods > 0 else 0,
+        },
     }
 
 
@@ -892,6 +1316,7 @@ def run_regime_gated_backtest(
             # Base pick info
             pick_info = {
                 "ticker": ticker,
+                "period_id": f"period_{step}",
                 "confidence": confidence,
                 "actual_return": actual_return,
                 "spy_return": spy_forward,
@@ -1050,5 +1475,17 @@ def run_regime_gated_backtest(
         "interpretation": interpretation,
         "period_breakdown": {
             "bear_periods_pct": round(bear_periods / total_periods * 100, 1) if total_periods > 0 else 0,
+        },
+        # Raw data for caching and recomputation with different period counts
+        "_raw_data": {
+            "picks_no_gate": picks_no_gate,
+            "picks_suppressed": picks_suppressed,
+            "picks_high_conf": picks_high_conf,
+            "period_regimes": period_regimes,
+            "stocks_tested": stocks_tested,
+            "stocks_failed": stocks_failed,
+            "normal_confidence": NORMAL_CONFIDENCE,
+            "bear_confidence": BEAR_CONFIDENCE,
+            "bear_threshold": BEAR_THRESHOLD,
         },
     }

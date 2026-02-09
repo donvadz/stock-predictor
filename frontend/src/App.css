@@ -168,6 +168,25 @@ button:disabled {
   font-weight: 500;
 }
 
+.loading-note {
+  font-size: 0.8rem;
+  color: #888;
+  font-style: italic;
+  margin-top: 8px;
+}
+
+.cache-badge {
+  display: inline-block;
+  background: #e3f2fd;
+  color: #1565c0;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
 /* Result styles */
 .result {
   margin-top: 20px;

@@ -5,8 +5,8 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Estimate backtest time in seconds based on test periods
 function getEstimatedSeconds(periods) {
   const p = Number(periods) || 30
-  // Roughly 9 seconds per period for 61 stocks (measured: 10 periods = 90 sec)
-  return Math.round(p * 9)
+  // Roughly 7.5 seconds per period for 61 stocks (measured: 10 periods = 75 sec)
+  return Math.round(p * 7.5)
 }
 
 // Format seconds as "X:XX"
@@ -143,6 +143,9 @@ function RegimeGatedBacktest() {
             {' '} • {' '}
             Est. remaining: ~{formatTime(Math.max(0, getEstimatedSeconds(testPeriods) - elapsedSeconds))}
           </p>
+          <p className="loading-note">
+            Tip: After running once, requests with fewer periods load instantly from cache.
+          </p>
         </div>
       )}
 
@@ -152,7 +155,10 @@ function RegimeGatedBacktest() {
 
       {result && (
         <div className="backtest-results">
-          <h3>Regime Gate Comparison</h3>
+          <h3>
+            Regime Gate Comparison
+            {result._cached && <span className="cache-badge">From Cache</span>}
+          </h3>
           <p className="backtest-subtitle">
             {result.summary.stocks_tested} stocks tested over {result.summary.total_periods} periods
             ({result.summary.bear_periods} bear, {result.summary.normal_periods} normal)

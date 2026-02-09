@@ -14,7 +14,13 @@ from config import (
 )
 from data import fetch_stock_data, fetch_fundamental_data
 from model import predict_direction
-from backtest import run_backtest, run_screener_backtest, run_regime_gated_backtest
+from backtest import (
+    run_backtest,
+    run_screener_backtest,
+    run_regime_gated_backtest,
+    compute_screener_metrics_from_raw,
+    compute_regime_metrics_from_raw,
+)
 
 app = FastAPI(title="Stock Direction Predictor")
 
@@ -378,13 +384,37 @@ def screener_backtest(
     - Regime segmentation (volatility, market trend)
     - Market-relative validation (vs SPY)
     - No-trade frequency reporting
-    """
-    cache_key = f"screener-backtest:{days}:{min_confidence}:{test_periods}"
 
-    # Check cache (longer TTL since this is slow)
-    cached = prediction_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    CACHE OPTIMIZATION:
+    - Raw data is cached by days and min_confidence only
+    - If cached data has >= requested test_periods, metrics are recomputed instantly
+    - This allows 100 periods to be cached and reused for 30, 50, etc.
+    """
+    # Cache key for raw data: excludes test_periods (we can recompute for fewer periods)
+    raw_cache_key = f"screener-backtest-raw:{days}:{min_confidence}"
+
+    # Check if we have cached raw data with enough periods
+    cached_raw = prediction_cache.get(raw_cache_key)
+
+    if cached_raw is not None:
+        cached_periods = cached_raw.get("max_periods", 0)
+        if cached_periods >= test_periods:
+            # Recompute metrics from cached raw data for requested period count
+            raw_data = cached_raw.get("_raw_data")
+            if raw_data:
+                recomputed = compute_screener_metrics_from_raw(raw_data, test_periods)
+                if recomputed:
+                    response = {
+                        "days": days,
+                        "min_confidence": min_confidence,
+                        "test_periods": test_periods,
+                        "_cached": True,  # Indicate this was served from cache
+                        **recomputed,
+                    }
+                    return response
+
+    # No suitable cache - run fresh backtest with requested periods
+    run_periods = test_periods
 
     # Fetch SPY data for market benchmark comparison
     spy_data = fetch_stock_data("SPY", prediction_days=30)
@@ -405,8 +435,8 @@ def screener_backtest(
             except Exception:
                 pass
 
-    # Run screener backtest with SPY benchmark
-    result = run_screener_backtest(stocks_data, days, min_confidence, test_periods, spy_data)
+    # Run screener backtest with max periods
+    result = run_screener_backtest(stocks_data, days, min_confidence, run_periods, spy_data)
 
     if result is None:
         raise HTTPException(
@@ -414,15 +444,25 @@ def screener_backtest(
             detail="No screener picks found with the given criteria. Try lowering min_confidence.",
         )
 
+    # Cache raw data for future recomputation (requests with fewer periods can reuse)
+    raw_data = result.pop("_raw_data", None)
+    if raw_data:
+        # Only update cache if we have more periods than currently cached
+        existing = prediction_cache.get(raw_cache_key)
+        existing_periods = existing.get("max_periods", 0) if existing else 0
+        if run_periods > existing_periods:
+            cache_entry = {
+                "max_periods": run_periods,
+                "_raw_data": raw_data,
+            }
+            prediction_cache.set(raw_cache_key, cache_entry, 21600)
+
     response = {
         "days": days,
         "min_confidence": min_confidence,
         "test_periods": test_periods,
         **result,
     }
-
-    # Cache for 6 hours (uses daily close prices only)
-    prediction_cache.set(cache_key, response, 21600)
 
     return response
 
@@ -436,7 +476,7 @@ def regime_gated_backtest(
     Backtest the screener with market regime gate based on SPY performance.
 
     Compares three modes:
-    - No Gate (Baseline): Standard 70% confidence threshold
+    - No Gate (Baseline): Standard 75% confidence threshold
     - Bear Suppressed: No trades when SPY trailing return < -1%
     - Bear 80% Confidence: Require 80% confidence when SPY trailing < -1%
 
@@ -444,13 +484,36 @@ def regime_gated_backtest(
     - Total trades, win rate, avg return
     - Worst trade, worst streak, max drawdown
     - % of picks beating SPY
-    """
-    cache_key = f"regime-gated-backtest:{days}:{test_periods}"
 
-    # Check cache
-    cached = prediction_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    CACHE OPTIMIZATION:
+    - Raw data is cached by days only
+    - If cached data has >= requested test_periods, metrics are recomputed instantly
+    - This allows 100 periods to be cached and reused for 30, 50, etc.
+    """
+    # Cache key for raw data: excludes test_periods (we can recompute for fewer periods)
+    raw_cache_key = f"regime-gated-backtest-raw:{days}"
+
+    # Check if we have cached raw data with enough periods
+    cached_raw = prediction_cache.get(raw_cache_key)
+
+    if cached_raw is not None:
+        cached_periods = cached_raw.get("max_periods", 0)
+        if cached_periods >= test_periods:
+            # Recompute metrics from cached raw data for requested period count
+            raw_data = cached_raw.get("_raw_data")
+            if raw_data:
+                recomputed = compute_regime_metrics_from_raw(raw_data, test_periods)
+                if recomputed:
+                    response = {
+                        "days": days,
+                        "test_periods": test_periods,
+                        "_cached": True,  # Indicate this was served from cache
+                        **recomputed,
+                    }
+                    return response
+
+    # No suitable cache - run fresh backtest with requested periods
+    run_periods = test_periods
 
     # Fetch SPY data for regime detection
     spy_data = fetch_stock_data("SPY", prediction_days=30)
@@ -477,12 +540,12 @@ def regime_gated_backtest(
             except Exception:
                 pass
 
-    # Run regime-gated backtest
+    # Run regime-gated backtest with max periods
     result = run_regime_gated_backtest(
         stocks_data,
         days,
         min_confidence=0.75,
-        test_periods=test_periods,
+        test_periods=run_periods,
         spy_data=spy_data,
     )
 
@@ -492,13 +555,23 @@ def regime_gated_backtest(
             detail="Insufficient data for regime-gated backtest.",
         )
 
+    # Cache raw data for future recomputation (requests with fewer periods can reuse)
+    raw_data = result.pop("_raw_data", None)
+    if raw_data:
+        # Only update cache if we have more periods than currently cached
+        existing = prediction_cache.get(raw_cache_key)
+        existing_periods = existing.get("max_periods", 0) if existing else 0
+        if run_periods > existing_periods:
+            cache_entry = {
+                "max_periods": run_periods,
+                "_raw_data": raw_data,
+            }
+            prediction_cache.set(raw_cache_key, cache_entry, 21600)
+
     response = {
         "days": days,
         "test_periods": test_periods,
         **result,
     }
-
-    # Cache for 6 hours (uses daily close prices only)
-    prediction_cache.set(cache_key, response, 21600)
 
     return response

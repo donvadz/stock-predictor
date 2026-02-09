@@ -5,8 +5,8 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Estimate backtest time in seconds based on test periods
 function getEstimatedSeconds(periods) {
   const p = Number(periods) || 30
-  // Roughly 9 seconds per period for 61 stocks (measured: 10 periods = 90 sec)
-  return Math.round(p * 9)
+  // Roughly 7.5 seconds per period for 61 stocks (measured: 10 periods = 75 sec)
+  return Math.round(p * 7.5)
 }
 
 // Format seconds as "X:XX"
@@ -147,6 +147,9 @@ function ScreenerBacktest() {
             {' '} • {' '}
             Est. remaining: ~{formatTime(Math.max(0, getEstimatedSeconds(testPeriods) - elapsedSeconds))}
           </p>
+          <p className="loading-note">
+            Tip: After running once, requests with fewer periods load instantly from cache.
+          </p>
         </div>
       )}
 
@@ -156,7 +159,10 @@ function ScreenerBacktest() {
 
       {result && (
         <div className="backtest-results">
-          <h3>Screener Strategy Results</h3>
+          <h3>
+            Screener Strategy Results
+            {result._cached && <span className="cache-badge">From Cache</span>}
+          </h3>
           <p className="backtest-subtitle">
             {result.summary.stocks_tested} stocks tested, {result.summary.total_picks} screener picks over {result.test_periods} periods
           </p>
