@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import PredictForm from './components/PredictForm.jsx'
 import Screener from './components/Screener.jsx'
+import Backtest from './components/Backtest.jsx'
+import ScreenerBacktest from './components/ScreenerBacktest.jsx'
+import RegimeGatedBacktest from './components/RegimeGatedBacktest.jsx'
 
 function App() {
   const [showAbout, setShowAbout] = useState(false)
@@ -15,6 +18,9 @@ function App() {
       <main>
         <PredictForm />
         <Screener />
+        <Backtest />
+        <ScreenerBacktest />
+        <RegimeGatedBacktest />
       </main>
 
       <footer>

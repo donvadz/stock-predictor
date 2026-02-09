@@ -322,6 +322,31 @@ function PredictForm() {
           <div className="result-confidence">
             Confidence: {(result.confidence * 100).toFixed(1)}%
           </div>
+
+          {/* Market Regime Section */}
+          {result.market_regime && (
+            <div className="prediction-regime">
+              <h4>Market Conditions</h4>
+              <div className="regime-status">
+                <span className={`regime-status-badge ${result.market_regime.regime}`}>
+                  {result.market_regime.regime === 'bear' ? '🐻' :
+                   result.market_regime.regime === 'bull' ? '🐂' : '📊'}
+                  {' '}{result.market_regime.regime.toUpperCase()}
+                </span>
+                <span className="regime-spy-small">
+                  SPY: {result.market_regime.spy_return >= 0 ? '+' : ''}{result.market_regime.spy_return}%
+                </span>
+              </div>
+              <div className="regime-threshold-info">
+                <span className={`regime-threshold-status ${result.market_regime.meets_threshold ? 'meets' : 'below'}`}>
+                  {result.market_regime.meets_threshold
+                    ? '✓ Meets regime threshold'
+                    : `⚠ Below ${(result.market_regime.recommended_confidence * 100).toFixed(0)}% threshold for ${result.market_regime.regime} market`
+                  }
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

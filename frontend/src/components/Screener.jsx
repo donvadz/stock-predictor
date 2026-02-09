@@ -301,6 +301,32 @@ function Screener() {
             {result.errors > 0 && ` • ${result.errors} errors`}
           </div>
 
+          {/* Market Regime Indicator */}
+          {result.market_regime && (
+            <div className={`regime-indicator regime-${result.market_regime.regime}`}>
+              <div className="regime-header">
+                <span className="regime-badge">
+                  {result.market_regime.regime === 'bear' ? '🐻' :
+                   result.market_regime.regime === 'bull' ? '🐂' : '📊'}
+                  {' '}{result.market_regime.regime.toUpperCase()} MARKET
+                </span>
+                <span className="regime-spy">
+                  SPY: {result.market_regime.spy_return >= 0 ? '+' : ''}{result.market_regime.spy_return}% (5d)
+                </span>
+              </div>
+              <div className="regime-details">
+                <span className="regime-recommendation">
+                  Recommended min confidence: <strong>{(result.market_regime.recommended_confidence * 100).toFixed(0)}%</strong>
+                </span>
+                {result.market_regime.regime === 'bear' && (
+                  <span className="regime-warning">
+                    ⚠️ {result.market_regime.regime_filtered_count} of {result.matches.length} picks meet 80% threshold
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {result.matches.length > 0 ? (
             <div className="results-table">
               <table>

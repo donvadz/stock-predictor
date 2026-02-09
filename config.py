@@ -26,7 +26,7 @@ STOCK_LIST = [
     # Healthcare
     "UNH", "JNJ", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "DHR", "BMY",
     # Consumer
-    "WMT", "PG", "KO", "PEP", "COST", "NKE", "MCD", "SBUX", "HD", "LOW",
+    "WMT", "PG", "KO", "PEP", "COST", "NKE", "MCD", "SBUX", "HD", "LOW", "BKNG",
     # Other
     "XOM", "CVX", "DIS", "NFLX", "PYPL", "UBER", "ABNB", "SQ", "COIN", "SNAP",
 
