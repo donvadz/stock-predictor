@@ -50,10 +50,17 @@ function RegimeGatedBacktest() {
     setResult(null)
     setError(null)
 
+    // Create abort controller with 10 minute timeout for long backtests
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 600000) // 10 minutes
+
     try {
       const response = await fetch(
-        `${API_BASE}/regime-gated-backtest?days=${days}&test_periods=${testPeriods}`
+        `${API_BASE}/regime-gated-backtest?days=${days}&test_periods=${testPeriods}`,
+        { signal: controller.signal }
       )
+
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         const data = await response.json()
@@ -63,7 +70,14 @@ function RegimeGatedBacktest() {
       const data = await response.json()
       setResult(data)
     } catch (err) {
-      setError(err.message)
+      clearTimeout(timeoutId)
+      if (err.name === 'AbortError') {
+        setError('Request timed out after 10 minutes. Try fewer test periods.')
+      } else if (err.message === 'Failed to fetch') {
+        setError('Connection lost. Check your network and try again. Long backtests may timeout on slow connections.')
+      } else {
+        setError(err.message)
+      }
     } finally {
       setLoading(false)
     }
