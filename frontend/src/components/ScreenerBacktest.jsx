@@ -5,8 +5,8 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Estimate backtest time in seconds based on test periods
 function getEstimatedSeconds(periods) {
   const p = Number(periods) || 30
-  // Roughly 4 seconds per period for 61 stocks
-  return Math.round(p * 4)
+  // Roughly 9 seconds per period for 61 stocks (measured: 10 periods = 90 sec)
+  return Math.round(p * 9)
 }
 
 // Format seconds as "X:XX"
