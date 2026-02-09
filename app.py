@@ -27,7 +27,7 @@ def get_market_regime() -> dict:
         dict with regime info:
         - regime: "bull" | "normal" | "bear"
         - spy_return: trailing 5-day return as percentage
-        - recommended_confidence: 0.70 for normal/bull, 0.80 for bear
+        - recommended_confidence: 0.75 for normal/bull, 0.80 for bear
         - description: human-readable explanation
     """
     try:
@@ -53,12 +53,12 @@ def get_market_regime() -> dict:
             description = f"Bear market signal: SPY down {abs(spy_return)}% over 5 days. Use higher confidence threshold (80%+)."
         elif spy_return > 2.0:
             regime = "bull"
-            recommended_confidence = 0.70
-            description = f"Bull market signal: SPY up {spy_return}% over 5 days. Standard confidence threshold (70%+) applies."
+            recommended_confidence = 0.75
+            description = f"Bull market signal: SPY up {spy_return}% over 5 days. Standard confidence threshold (75%+) applies."
         else:
             regime = "normal"
-            recommended_confidence = 0.70
-            description = f"Normal market conditions: SPY {'+' if spy_return >= 0 else ''}{spy_return}% over 5 days. Standard confidence threshold (70%+) applies."
+            recommended_confidence = 0.75
+            description = f"Normal market conditions: SPY {'+' if spy_return >= 0 else ''}{spy_return}% over 5 days. Standard confidence threshold (75%+) applies."
 
         return {
             "regime": regime,
@@ -202,38 +202,51 @@ def screener(
     min_confidence: float = Query(0.75, ge=0.5, le=1.0, description="Minimum confidence (0.5-1.0)"),
 ):
     """Scan stocks and return those predicted to go UP with confidence above threshold."""
-    cache_key = f"screener:{days}:{min_confidence}"
+    # Cache key excludes min_confidence - we cache all bullish predictions and filter afterwards
+    cache_key = f"screener:{days}"
 
-    # Check cache
+    # Check cache for all bullish predictions
     cached = prediction_cache.get(cache_key)
-    if cached is not None:
-        return cached
 
-    matches = []
-    scanned = 0
-    errors = 0
+    if cached is None:
+        # No cache - run fresh scan
+        all_bullish = []
+        scanned = 0
+        errors = 0
 
-    # Scan stocks in parallel (8 threads)
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(_predict_single, ticker, days): ticker for ticker in STOCK_LIST}
+        # Scan stocks in parallel (8 threads)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_predict_single, ticker, days): ticker for ticker in STOCK_LIST}
 
-        for future in as_completed(futures):
-            result = future.result()
-            scanned += 1
-            if result is None:
-                errors += 1
-            elif result["direction"] == "up" and result["confidence"] >= min_confidence:
-                matches.append({
-                    "ticker": result["ticker"],
-                    "name": result["name"],
-                    "confidence": result["confidence"],
-                    "latest_price": result["latest_price"],
-                    "predicted_price": result["predicted_price"],
-                    "predicted_change": result["predicted_change"],
-                })
+            for future in as_completed(futures):
+                result = future.result()
+                scanned += 1
+                if result is None:
+                    errors += 1
+                elif result["direction"] == "up":
+                    # Store ALL bullish predictions (filter by confidence later)
+                    all_bullish.append({
+                        "ticker": result["ticker"],
+                        "name": result["name"],
+                        "confidence": result["confidence"],
+                        "latest_price": result["latest_price"],
+                        "predicted_price": result["predicted_price"],
+                        "predicted_change": result["predicted_change"],
+                    })
 
-    # Sort by confidence descending
-    matches.sort(key=lambda x: x["confidence"], reverse=True)
+        # Sort by confidence descending
+        all_bullish.sort(key=lambda x: x["confidence"], reverse=True)
+
+        # Cache the full results (all bullish predictions)
+        cached = {
+            "stocks_scanned": scanned,
+            "errors": errors,
+            "all_bullish": all_bullish,
+        }
+        prediction_cache.set(cache_key, cached, SCREENER_CACHE_TTL)
+
+    # Filter by user's requested min_confidence (instant from cache)
+    matches = [m for m in cached["all_bullish"] if m["confidence"] >= min_confidence]
 
     # Get current market regime
     market_regime = get_market_regime()
@@ -247,8 +260,8 @@ def screener(
     response = {
         "days": days,
         "min_confidence": min_confidence,
-        "stocks_scanned": scanned,
-        "errors": errors,
+        "stocks_scanned": cached["stocks_scanned"],
+        "errors": cached["errors"],
         "matches": matches,
         "market_regime": {
             "regime": market_regime["regime"],
@@ -259,8 +272,8 @@ def screener(
         },
     }
 
-    # Cache the result
-    prediction_cache.set(cache_key, response, SCREENER_CACHE_TTL)
+    # No need to cache here - raw data already cached above
+    # Filtering by min_confidence is instant
 
     return response
 
@@ -312,8 +325,8 @@ def backtest(
         **result,
     }
 
-    # Cache the result
-    prediction_cache.set(cache_key, response, 600)  # 10 minute cache
+    # Cache the result (6 hours - uses daily close prices only)
+    prediction_cache.set(cache_key, response, 21600)
 
     return response
 
@@ -350,7 +363,7 @@ SCREENER_BACKTEST_STOCKS = [
 @app.get("/screener-backtest")
 def screener_backtest(
     days: int = Query(5, ge=1, le=30, description="Days ahead to predict (1-30)"),
-    min_confidence: float = Query(0.7, ge=0.5, le=1.0, description="Minimum confidence (0.5-1.0)"),
+    min_confidence: float = Query(0.75, ge=0.5, le=1.0, description="Minimum confidence (0.5-1.0)"),
     test_periods: int = Query(30, ge=10, le=100, description="Test periods per stock (10-100)"),
 ):
     """
@@ -408,8 +421,8 @@ def screener_backtest(
         **result,
     }
 
-    # Cache for 15 minutes
-    prediction_cache.set(cache_key, response, 900)
+    # Cache for 6 hours (uses daily close prices only)
+    prediction_cache.set(cache_key, response, 21600)
 
     return response
 
@@ -468,7 +481,7 @@ def regime_gated_backtest(
     result = run_regime_gated_backtest(
         stocks_data,
         days,
-        min_confidence=0.7,
+        min_confidence=0.75,
         test_periods=test_periods,
         spy_data=spy_data,
     )
@@ -485,7 +498,7 @@ def regime_gated_backtest(
         **result,
     }
 
-    # Cache for 15 minutes
-    prediction_cache.set(cache_key, response, 900)
+    # Cache for 6 hours (uses daily close prices only)
+    prediction_cache.set(cache_key, response, 21600)
 
     return response

@@ -4,7 +4,7 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function ScreenerBacktest() {
   const [days, setDays] = useState('5')
-  const [minConfidence, setMinConfidence] = useState('70')
+  const [minConfidence, setMinConfidence] = useState('75')
   const [testPeriods, setTestPeriods] = useState('30')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)

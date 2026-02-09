@@ -89,7 +89,7 @@ function RegimeGatedBacktest() {
           <div className="form-group">
             <label>Settings (Fixed)</label>
             <div className="settings-info">
-              Normal: ≥70% conf<br/>
+              Normal: ≥75% conf<br/>
               Bear: ≥80% or suppress
             </div>
           </div>

@@ -127,7 +127,7 @@ function Backtest() {
             {result.summary.high_confidence_accuracy && (
               <div className={`metric-card ${getAccuracyColor(result.summary.high_confidence_accuracy)}`}>
                 <div className="metric-value">{result.summary.high_confidence_accuracy}%</div>
-                <div className="metric-label">High Confidence (≥70%)</div>
+                <div className="metric-label">High Confidence (≥75%)</div>
               </div>
             )}
 

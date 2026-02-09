@@ -173,7 +173,7 @@ def run_backtest(
     accuracy = correct_predictions / total_predictions
 
     # Accuracy by confidence level
-    high_conf = df_results[df_results["confidence"] >= 0.7]
+    high_conf = df_results[df_results["confidence"] >= 0.75]
     high_conf_accuracy = high_conf["direction_correct"].mean() if len(high_conf) > 0 else None
 
     low_conf = df_results[df_results["confidence"] < 0.6]
@@ -227,7 +227,7 @@ def run_backtest(
 def run_screener_backtest(
     stocks_data: List[Dict],
     days: int,
-    min_confidence: float = 0.7,
+    min_confidence: float = 0.75,
     test_periods: int = 30,
     spy_data: Optional[pd.DataFrame] = None,
 ) -> Optional[dict]:
@@ -701,7 +701,7 @@ def _compute_metrics_from_picks(picks_list: List[Dict], spy_returns: Dict) -> Di
 def run_regime_gated_backtest(
     stocks_data: List[Dict],
     days: int,
-    min_confidence: float = 0.7,
+    min_confidence: float = 0.75,
     test_periods: int = 30,
     spy_data: Optional[pd.DataFrame] = None,
 ) -> Optional[dict]:
@@ -710,7 +710,7 @@ def run_regime_gated_backtest(
 
     REGIME GATE RULES:
     - At each decision date, calculate SPY 5-day TRAILING return (no future data)
-    - If SPY trailing return >= -1%: Normal mode (confidence >= 70%)
+    - If SPY trailing return >= -1%: Normal mode (confidence >= 75%)
     - If SPY trailing return < -1%: Bear mode applies
 
     BEAR MODE OPTIONS:
@@ -726,7 +726,7 @@ def run_regime_gated_backtest(
     Args:
         stocks_data: List of dicts with 'ticker', 'df', 'fundamentals'
         days: Prediction horizon (also used for SPY trailing window)
-        min_confidence: Base confidence threshold (0.7 for normal mode)
+        min_confidence: Base confidence threshold (0.75 for normal mode)
         test_periods: Number of test periods per stock
         spy_data: SPY price data for regime detection
 
@@ -737,7 +737,7 @@ def run_regime_gated_backtest(
     # LOCK THRESHOLDS BEFORE TESTING
     # These values are FIXED and not optimized based on backtest results
     # =========================================================================
-    NORMAL_CONFIDENCE = min_confidence  # 0.70 for normal mode
+    NORMAL_CONFIDENCE = min_confidence  # 0.75 for normal mode
     BEAR_CONFIDENCE = 0.80  # 0.80 for bear mode (high confidence)
     BEAR_THRESHOLD = -0.01  # -1% SPY return triggers bear mode
 
