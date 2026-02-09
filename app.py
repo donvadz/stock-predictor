@@ -394,24 +394,26 @@ def screener_backtest(
     raw_cache_key = f"screener-backtest-raw:{days}:{min_confidence}"
 
     # Check if we have cached raw data with enough periods
-    cached_raw = prediction_cache.get(raw_cache_key)
-
-    if cached_raw is not None:
-        cached_periods = cached_raw.get("max_periods", 0)
-        if cached_periods >= test_periods:
-            # Recompute metrics from cached raw data for requested period count
-            raw_data = cached_raw.get("_raw_data")
-            if raw_data:
-                recomputed = compute_screener_metrics_from_raw(raw_data, test_periods)
-                if recomputed:
-                    response = {
-                        "days": days,
-                        "min_confidence": min_confidence,
-                        "test_periods": test_periods,
-                        "_cached": True,  # Indicate this was served from cache
-                        **recomputed,
-                    }
-                    return response
+    try:
+        cached_raw = prediction_cache.get(raw_cache_key)
+        if cached_raw is not None and isinstance(cached_raw, dict):
+            cached_periods = cached_raw.get("max_periods", 0)
+            if cached_periods >= test_periods:
+                raw_data = cached_raw.get("_raw_data")
+                if raw_data:
+                    recomputed = compute_screener_metrics_from_raw(raw_data, test_periods)
+                    if recomputed:
+                        response = {
+                            "days": days,
+                            "min_confidence": min_confidence,
+                            "test_periods": test_periods,
+                            "_cached": True,
+                            **recomputed,
+                        }
+                        return response
+    except Exception:
+        # If cache fails, continue to run fresh backtest
+        pass
 
     # No suitable cache - run fresh backtest with requested periods
     run_periods = test_periods
@@ -447,15 +449,17 @@ def screener_backtest(
     # Cache raw data for future recomputation (requests with fewer periods can reuse)
     raw_data = result.pop("_raw_data", None)
     if raw_data:
-        # Only update cache if we have more periods than currently cached
-        existing = prediction_cache.get(raw_cache_key)
-        existing_periods = existing.get("max_periods", 0) if existing else 0
-        if run_periods > existing_periods:
-            cache_entry = {
-                "max_periods": run_periods,
-                "_raw_data": raw_data,
-            }
-            prediction_cache.set(raw_cache_key, cache_entry, 21600)
+        try:
+            existing = prediction_cache.get(raw_cache_key)
+            existing_periods = existing.get("max_periods", 0) if existing and isinstance(existing, dict) else 0
+            if run_periods > existing_periods:
+                cache_entry = {
+                    "max_periods": run_periods,
+                    "_raw_data": raw_data,
+                }
+                prediction_cache.set(raw_cache_key, cache_entry, 21600)
+        except Exception:
+            pass  # Caching is best-effort
 
     response = {
         "days": days,
@@ -494,23 +498,24 @@ def regime_gated_backtest(
     raw_cache_key = f"regime-gated-backtest-raw:{days}"
 
     # Check if we have cached raw data with enough periods
-    cached_raw = prediction_cache.get(raw_cache_key)
-
-    if cached_raw is not None:
-        cached_periods = cached_raw.get("max_periods", 0)
-        if cached_periods >= test_periods:
-            # Recompute metrics from cached raw data for requested period count
-            raw_data = cached_raw.get("_raw_data")
-            if raw_data:
-                recomputed = compute_regime_metrics_from_raw(raw_data, test_periods)
-                if recomputed:
-                    response = {
-                        "days": days,
-                        "test_periods": test_periods,
-                        "_cached": True,  # Indicate this was served from cache
-                        **recomputed,
-                    }
-                    return response
+    try:
+        cached_raw = prediction_cache.get(raw_cache_key)
+        if cached_raw is not None and isinstance(cached_raw, dict):
+            cached_periods = cached_raw.get("max_periods", 0)
+            if cached_periods >= test_periods:
+                raw_data = cached_raw.get("_raw_data")
+                if raw_data:
+                    recomputed = compute_regime_metrics_from_raw(raw_data, test_periods)
+                    if recomputed:
+                        response = {
+                            "days": days,
+                            "test_periods": test_periods,
+                            "_cached": True,
+                            **recomputed,
+                        }
+                        return response
+    except Exception:
+        pass  # If cache fails, continue to run fresh backtest
 
     # No suitable cache - run fresh backtest with requested periods
     run_periods = test_periods
@@ -558,15 +563,17 @@ def regime_gated_backtest(
     # Cache raw data for future recomputation (requests with fewer periods can reuse)
     raw_data = result.pop("_raw_data", None)
     if raw_data:
-        # Only update cache if we have more periods than currently cached
-        existing = prediction_cache.get(raw_cache_key)
-        existing_periods = existing.get("max_periods", 0) if existing else 0
-        if run_periods > existing_periods:
-            cache_entry = {
-                "max_periods": run_periods,
-                "_raw_data": raw_data,
-            }
-            prediction_cache.set(raw_cache_key, cache_entry, 21600)
+        try:
+            existing = prediction_cache.get(raw_cache_key)
+            existing_periods = existing.get("max_periods", 0) if existing and isinstance(existing, dict) else 0
+            if run_periods > existing_periods:
+                cache_entry = {
+                    "max_periods": run_periods,
+                    "_raw_data": raw_data,
+                }
+                prediction_cache.set(raw_cache_key, cache_entry, 21600)
+        except Exception:
+            pass  # Caching is best-effort
 
     response = {
         "days": days,
