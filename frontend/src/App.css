@@ -157,6 +157,17 @@ button:disabled {
   color: #666;
 }
 
+.loading-text p {
+  margin: 4px 0;
+}
+
+.loading-timer {
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-size: 0.9rem;
+  color: #1565c0;
+  font-weight: 500;
+}
+
 /* Result styles */
 .result {
   margin-top: 20px;

@@ -1,6 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+// Format seconds as "X:XX"
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
 
 // Stock categories for display with names
 const STOCK_CATEGORIES = {
@@ -201,12 +208,32 @@ function Screener() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [showStockList, setShowStockList] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const timerRef = useRef(null)
 
   const daysNum = Number(days)
   const isValidDays = days !== '' && daysNum >= 1 && daysNum <= 30
 
   // Count total stocks
   const totalStocks = Object.values(STOCK_CATEGORIES).flat().length
+
+  // Timer effect
+  useEffect(() => {
+    if (loading) {
+      setElapsedSeconds(0)
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(s => s + 1)
+      }, 1000)
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [loading])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -287,7 +314,14 @@ function Screener() {
       </form>
 
       {loading && (
-        <p className="loading-text">Scanning {totalStocks} stocks & ETFs... This may take ~90 seconds.</p>
+        <div className="loading-text">
+          <p>Scanning {totalStocks} stocks & ETFs...</p>
+          <p className="loading-timer">
+            ⏱ Elapsed: {formatTime(elapsedSeconds)}
+            {' '} • {' '}
+            Est. remaining: ~{formatTime(Math.max(0, 90 - elapsedSeconds))}
+          </p>
+        </div>
       )}
 
       {error && (

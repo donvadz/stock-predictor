@@ -1,6 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+// Estimate backtest time in seconds based on test periods
+function getEstimatedSeconds(periods) {
+  const p = Number(periods) || 30
+  // Roughly 4 seconds per period for 61 stocks
+  return Math.round(p * 4)
+}
+
+// Format seconds as "X:XX"
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
 
 function ScreenerBacktest() {
   const [days, setDays] = useState('5')
@@ -9,6 +23,26 @@ function ScreenerBacktest() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const timerRef = useRef(null)
+
+  // Timer effect
+  useEffect(() => {
+    if (loading) {
+      setElapsedSeconds(0)
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(s => s + 1)
+      }, 1000)
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [loading])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -106,9 +140,14 @@ function ScreenerBacktest() {
       </form>
 
       {loading && (
-        <p className="loading-text">
-          Testing screener on ~61 stocks over {testPeriods} non-overlapping periods each... This may take 2-3 minutes.
-        </p>
+        <div className="loading-text">
+          <p>Testing screener on ~61 stocks over {testPeriods} non-overlapping periods...</p>
+          <p className="loading-timer">
+            ⏱ Elapsed: {formatTime(elapsedSeconds)}
+            {' '} • {' '}
+            Est. remaining: ~{formatTime(Math.max(0, getEstimatedSeconds(testPeriods) - elapsedSeconds))}
+          </p>
+        </div>
       )}
 
       {error && (
