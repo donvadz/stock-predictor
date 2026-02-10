@@ -1,19 +1,23 @@
 """
 Backtesting module to evaluate model performance on historical data.
 
+TWO BACKTEST MODES:
+1. run_backtest_realistic() - DEFAULT, RECOMMENDED
+   - Trains ONCE on first 70% of data
+   - Tests on remaining 30% WITHOUT retraining
+   - Matches real-world deployment (model is frozen)
+   - Shows ~52% accuracy (honest)
+
+2. run_backtest() - LEGACY, OPTIMISTIC
+   - Retrains at every prediction step
+   - Shows ~70% accuracy (inflated)
+   - Does NOT match production reality
+   - Kept for comparison only
+
 LEAKAGE PREVENTION NOTES:
 - All features are computed using ONLY data available at prediction time
-- The model is trained on data BEFORE test_idx, never including test_idx or later
 - Confidence thresholds (min_confidence) are fixed BEFORE backtesting begins
 - No hyperparameter tuning is done using test period performance
-- Future returns (target) are computed using shift(-days) which looks forward,
-  but this is ONLY used for labeling training data, not features
-- SPY regime gate uses TRAILING returns only (no future data)
-
-REGIME GATE NOTES:
-- SPY 5-day trailing return is calculated ENDING at decision date (no lookahead)
-- Confidence thresholds for bear mode are FIXED before testing (not optimized)
-- Gate rules are applied consistently across all stocks and periods
 """
 from typing import Optional, List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +27,143 @@ from model import compute_technical_features, add_fundamental_features
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from config import MIN_DATA_POINTS
+
+
+def run_backtest_realistic(
+    df: pd.DataFrame,
+    days: int,
+    fundamentals: Optional[dict] = None,
+    train_ratio: float = 0.7,
+) -> Optional[dict]:
+    """
+    REALISTIC backtest: Train ONCE, test separately (no retraining).
+
+    This matches real-world deployment where you:
+    1. Build a model
+    2. Deploy it
+    3. It has to work for months without updates
+
+    Args:
+        df: DataFrame with OHLCV data
+        days: Prediction horizon in days
+        fundamentals: Optional fundamental data dict
+        train_ratio: Fraction of data to use for training (default 70%)
+
+    Returns:
+        Dictionary with backtest results
+    """
+    if len(df) < MIN_DATA_POINTS + 50:
+        return None
+
+    # Compute features
+    features = compute_technical_features(df)
+    features = add_fundamental_features(features, fundamentals)
+
+    # Construct targets
+    future_return = df["close"].shift(-days) / df["close"] - 1
+    target_direction = (future_return > 0).astype(int)
+
+    # Combine features and targets
+    feature_cols = features.columns.tolist()
+    data = features.copy()
+    data["target_direction"] = target_direction
+    data["close"] = df["close"]
+    data = data.ffill().bfill().dropna()
+
+    if len(data) < MIN_DATA_POINTS + 20:
+        return None
+
+    # CRITICAL: Split data ONCE - no retraining
+    split_idx = int(len(data) * train_ratio)
+    train_data = data.iloc[:split_idx]
+    test_data = data.iloc[split_idx:]
+
+    if len(train_data) < MIN_DATA_POINTS or len(test_data) < 10:
+        return None
+
+    # Train model ONCE
+    X_train = train_data[feature_cols].replace([np.inf, -np.inf], 0)
+    y_train = train_data["target_direction"]
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+
+    classifier = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=8,
+        min_samples_leaf=5,
+        min_samples_split=10,
+        random_state=42,
+        n_jobs=-1,
+    )
+    classifier.fit(X_train_scaled, y_train)
+
+    # Test on ALL test data (non-overlapping windows)
+    results = []
+    test_indices = list(range(0, len(test_data) - days, days))
+
+    for idx in test_indices:
+        test_row = test_data.iloc[[idx]]
+        X_test = test_row[feature_cols].replace([np.inf, -np.inf], 0)
+        X_test_scaled = scaler.transform(X_test)
+
+        pred_direction = classifier.predict(X_test_scaled)[0]
+        pred_proba = classifier.predict_proba(X_test_scaled)[0]
+        confidence = float(max(pred_proba))
+
+        # Actual outcome
+        actual_idx = idx + days
+        if actual_idx >= len(test_data):
+            continue
+
+        actual_return = float(test_data.iloc[actual_idx]["close"] / test_data.iloc[idx]["close"] - 1)
+        actual_direction = 1 if actual_return > 0 else 0
+
+        results.append({
+            "date": str(test_data.index[idx]) if hasattr(test_data.index[idx], 'strftime') else str(idx),
+            "predicted_direction": "up" if pred_direction == 1 else "down",
+            "actual_direction": "up" if actual_direction == 1 else "down",
+            "direction_correct": bool(pred_direction == actual_direction),
+            "confidence": float(confidence),
+            "actual_return": float(actual_return * 100),
+        })
+
+    if len(results) == 0:
+        return None
+
+    # Calculate summary statistics
+    df_results = pd.DataFrame(results)
+    correct = df_results["direction_correct"].sum()
+    total = len(df_results)
+    accuracy = correct / total
+
+    # High confidence accuracy
+    high_conf = df_results[df_results["confidence"] >= 0.75]
+    high_conf_acc = high_conf["direction_correct"].mean() if len(high_conf) > 0 else None
+
+    # Up predictions performance
+    up_preds = df_results[df_results["predicted_direction"] == "up"]
+    up_win_rate = (up_preds["actual_return"] > 0).mean() if len(up_preds) > 0 else 0
+    avg_return_when_up = up_preds["actual_return"].mean() if len(up_preds) > 0 else 0
+
+    return {
+        "backtest_type": "realistic",
+        "methodology": "Train once on first 70%, test on remaining 30% (no retraining)",
+        "warning": "This shows realistic accuracy. Walk-forward backtests show inflated results.",
+        "summary": {
+            "train_size": len(train_data),
+            "test_size": len(test_data),
+            "total_predictions": int(total),
+            "correct_predictions": int(correct),
+            "accuracy": round(float(accuracy * 100), 2),
+            "high_confidence_accuracy": round(float(high_conf_acc * 100), 2) if high_conf_acc else None,
+            "high_confidence_count": len(high_conf),
+            "up_predictions": len(up_preds),
+            "up_win_rate": round(float(up_win_rate * 100), 2),
+            "avg_return_when_up": round(float(avg_return_when_up), 2),
+        },
+        "predictions": results[-20:],
+    }
 
 
 def run_backtest(

@@ -12,7 +12,7 @@ body {
 }
 
 .app {
-  max-width: 900px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -34,22 +34,18 @@ header p {
 }
 
 main {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 30px;
-}
-
-@media (min-width: 768px) {
-  main {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 /* Card styles */
 .card {
   background: white;
   border-radius: 12px;
-  padding: 24px;
+  padding: 24px 32px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  width: 100%;
 }
 
 .card h2 {
@@ -1185,4 +1181,636 @@ footer {
 
 .regime-threshold-info {
   margin-top: 8px;
+}
+
+/* =====================================================
+   NEW STYLES - Regime Banner, Optimal Scan, Stress Test
+   ===================================================== */
+
+/* Header updates */
+.header-caveat {
+  font-size: 0.85rem;
+  color: #888;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+/* Regime Banner */
+.regime-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 20px;
+  margin-bottom: 20px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.regime-banner.regime-normal {
+  background: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+  border: 1px solid #81c784;
+}
+
+.regime-banner.regime-caution {
+  background: linear-gradient(135deg, #fff8e1, #ffecb3);
+  border: 1px solid #ffc107;
+}
+
+.regime-banner.regime-crisis {
+  background: linear-gradient(135deg, #ffebee, #ffcdd2);
+  border: 1px solid #e57373;
+}
+
+.regime-banner.regime-recovery {
+  background: linear-gradient(135deg, #fff3e0, #ffe0b2);
+  border: 1px solid #ffb74d;
+}
+
+.regime-banner.regime-euphoria {
+  background: linear-gradient(135deg, #f3e5f5, #e1bee7);
+  border: 1px solid #ba68c8;
+}
+
+.regime-banner.regime-loading {
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+}
+
+.regime-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.regime-banner-icon {
+  font-size: 1.5rem;
+}
+
+.regime-banner-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.regime-banner-label {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #333;
+}
+
+.regime-banner-action {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.regime-banner-metrics {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.regime-metric {
+  font-size: 0.85rem;
+  color: #444;
+  font-weight: 500;
+}
+
+.regime-metric.negative {
+  color: #c62828;
+}
+
+.regime-metric.warning {
+  color: #e65100;
+}
+
+.regime-banner-description {
+  font-size: 0.85rem;
+  color: #555;
+  flex-basis: 100%;
+  text-align: center;
+  margin-top: 4px;
+}
+
+@media (min-width: 768px) {
+  .regime-banner-description {
+    flex-basis: auto;
+    text-align: right;
+    margin-top: 0;
+  }
+}
+
+/* Tab Navigation */
+.tab-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding: 4px;
+  background: #f0f0f0;
+  border-radius: 12px;
+  overflow-x: auto;
+}
+
+.tab-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #666;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.tab-button:hover {
+  background: #e0e0e0;
+  color: #333;
+}
+
+.tab-button.active {
+  background: white;
+  color: #1565c0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.tab-icon {
+  font-size: 1.1rem;
+}
+
+.tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.signals-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 700px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.screener-tab {
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.backtest-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.stress-tab {
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Optimal Scan Card */
+.optimal-scan-card {
+  position: relative;
+}
+
+.card-header-badge {
+  position: absolute;
+  top: -10px;
+  right: 16px;
+}
+
+.badge-recommended {
+  background: linear-gradient(135deg, #4caf50, #2e7d32);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.accuracy-highlight {
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.tier-stocks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.tier-label {
+  font-weight: 600;
+  color: #555;
+}
+
+.tier-list {
+  font-family: monospace;
+  color: #1565c0;
+}
+
+/* Signal Cards */
+.signals-section {
+  margin-top: 20px;
+}
+
+.signals-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 1.1rem;
+}
+
+.signal-icon {
+  font-size: 1.2rem;
+}
+
+.section-note {
+  color: #666;
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+}
+
+.signal-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.signal-card {
+  padding: 14px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.signal-card.ultra {
+  background: linear-gradient(135deg, #fff8e1, #ffecb3);
+  border: 2px solid #ffc107;
+}
+
+.signal-card.high {
+  background: #e8f5e9;
+  border: 1px solid #81c784;
+}
+
+.signal-ticker {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  font-family: monospace;
+}
+
+.signal-price {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+  margin: 4px 0;
+}
+
+.signal-prediction {
+  font-size: 0.9rem;
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.signal-confidence {
+  font-size: 0.85rem;
+  color: #555;
+  margin-top: 4px;
+}
+
+.signal-signals {
+  font-size: 0.8rem;
+  color: #1565c0;
+  font-weight: 500;
+}
+
+.signal-details {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #888;
+}
+
+/* No Signals */
+.no-signals {
+  text-align: center;
+  padding: 40px 20px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  margin-top: 20px;
+}
+
+.no-signals-icon {
+  font-size: 3rem;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.no-signals h4 {
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.no-signals p {
+  color: #888;
+  font-size: 0.9rem;
+}
+
+/* Methodology Box */
+.methodology-box {
+  margin-top: 24px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 3px solid #1565c0;
+}
+
+.methodology-box h4 {
+  margin-bottom: 10px;
+  color: #1a1a2e;
+  font-size: 0.95rem;
+}
+
+.methodology-box ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.85rem;
+  color: #555;
+  line-height: 1.6;
+}
+
+.methodology-note {
+  margin-top: 12px;
+  font-size: 0.8rem;
+  color: #888;
+  font-style: italic;
+}
+
+/* Regime Warning Box */
+.regime-warning-box {
+  padding: 12px 16px;
+  background: #ffebee;
+  border: 1px solid #e57373;
+  border-radius: 8px;
+  color: #c62828;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+
+/* Stress Test Card */
+.stress-test-card {
+  max-width: 100%;
+}
+
+.stress-results {
+  margin-top: 20px;
+}
+
+.stress-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.stress-verdict.regime_dependent {
+  background: #fff3e0;
+  border: 2px solid #ff9800;
+}
+
+.stress-verdict.resilient {
+  background: #e8f5e9;
+  border: 2px solid #4caf50;
+}
+
+.verdict-label {
+  font-weight: 600;
+  color: #555;
+}
+
+.verdict-value {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.stress-interpretation {
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.stress-interpretation p {
+  margin: 4px 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.stress-periods h4 {
+  margin-bottom: 12px;
+  color: #1a1a2e;
+}
+
+.periods-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.period-card {
+  padding: 16px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.period-card.survived {
+  background: #e8f5e9;
+  border: 1px solid #81c784;
+}
+
+.period-card.failed {
+  background: #ffebee;
+  border: 1px solid #ef9a9a;
+}
+
+.period-status {
+  font-size: 1.5rem;
+  margin-bottom: 6px;
+}
+
+.period-name {
+  font-weight: 600;
+  color: #333;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+
+.period-desc {
+  font-size: 0.8rem;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.period-accuracy {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.period-accuracy.accuracy-great {
+  color: #2e7d32;
+}
+
+.period-accuracy.accuracy-ok {
+  color: #f57f17;
+}
+
+.period-accuracy.accuracy-poor {
+  color: #c62828;
+}
+
+.period-picks {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.period-drawdown {
+  font-size: 0.8rem;
+  color: #c62828;
+  margin-top: 4px;
+}
+
+.stress-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.summary-column {
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.summary-column.survived {
+  background: #e8f5e9;
+}
+
+.summary-column.failed {
+  background: #ffebee;
+}
+
+.summary-column h5 {
+  margin-bottom: 10px;
+  font-size: 0.95rem;
+}
+
+.summary-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+.summary-accuracy {
+  font-weight: 600;
+}
+
+.summary-empty {
+  color: #888;
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.stress-warning {
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: #fff3e0;
+  border-left: 4px solid #ff9800;
+  border-radius: 0 8px 8px 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.stress-warning strong {
+  color: #e65100;
+}
+
+/* About Modal Updates */
+.warning-section {
+  background: #ffebee;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.warning-section h4 {
+  color: #c62828;
+}
+
+.warning-section ul {
+  color: #c62828;
+}
+
+.disclaimer-section {
+  background: #f5f5f5;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.about-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+.about-table th,
+.about-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.about-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+}
+
+.about-table .row-good {
+  background: #e8f5e9;
+}
+
+.about-table .row-ok {
+  background: #fff8e1;
+}
+
+.about-table .row-bad {
+  background: #ffebee;
 }

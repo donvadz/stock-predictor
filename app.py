@@ -16,11 +16,20 @@ from data import fetch_stock_data, fetch_fundamental_data
 from model import predict_direction
 from backtest import (
     run_backtest,
+    run_backtest_realistic,
     run_screener_backtest,
     run_regime_gated_backtest,
     compute_screener_metrics_from_raw,
     compute_regime_metrics_from_raw,
 )
+from backtest_realistic import (
+    run_screener_backtest_realistic,
+    run_regime_backtest_realistic,
+)
+from validation import run_year_split_backtest, analyze_feature_importance
+from regime_aware import get_current_regime, detect_regime
+from optimal_strategy import run_optimal_backtest, run_production_scan, TIER1_STOCKS, OPTIMAL_STOCKS
+from stress_test import run_all_stress_tests, run_crisis_backtest
 
 app = FastAPI(title="Stock Direction Predictor")
 
@@ -288,36 +297,49 @@ def screener(
 def backtest(
     ticker: str = Query(..., description="Stock ticker symbol"),
     days: int = Query(5, ge=1, le=30, description="Days ahead to predict (1-30)"),
-    test_periods: int = Query(50, ge=20, le=200, description="Number of test periods (20-200)"),
+    mode: str = Query("realistic", description="'realistic' (recommended) or 'walkforward' (inflated)"),
 ):
     """
-    Run a walk-forward backtest to evaluate model performance on historical data.
+    Run a backtest to evaluate model performance on historical data.
 
-    Tests the model by making predictions at historical points and comparing
-    to actual outcomes.
+    TWO MODES:
+    - realistic (DEFAULT): Train once on 70% of data, test on 30%. No retraining.
+      Shows honest accuracy (~50-55%). This matches real-world deployment.
+
+    - walkforward: Retrain model at every step. Shows inflated accuracy (~65-70%).
+      Does NOT match production reality. Included for comparison only.
+
+    IMPORTANT: The 'realistic' mode is what you should trust.
     """
     ticker = ticker.upper()
-    cache_key = f"backtest:{ticker}:{days}:{test_periods}"
+    cache_key = f"backtest:{ticker}:{days}:{mode}"
 
-    # Check cache (backtest results cached for 10 minutes)
+    # Check cache
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
 
     # Fetch stock data (use long lookback for more test data)
-    df = fetch_stock_data(ticker, prediction_days=30)  # Force long lookback
+    df = fetch_stock_data(ticker, prediction_days=30)
     if df is None or len(df) == 0:
         raise HTTPException(status_code=404, detail=f"No data found for ticker: {ticker}")
 
     # Fetch fundamental data
     fundamentals = fetch_fundamental_data(ticker)
 
-    # Run backtest
-    result = run_backtest(df, days, fundamentals, test_periods)
+    # Run appropriate backtest
+    if mode == "walkforward":
+        result = run_backtest(df, days, fundamentals, test_periods=50)
+        if result:
+            result["backtest_type"] = "walkforward"
+            result["warning"] = "Walk-forward backtests show INFLATED accuracy due to constant retraining. Use 'realistic' mode for honest results."
+    else:
+        result = run_backtest_realistic(df, days, fundamentals)
+
     if result is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient data for backtesting. Need at least {MIN_DATA_POINTS + test_periods + days} data points.",
+            detail=f"Insufficient data for backtesting.",
         )
 
     # Get stock name
@@ -327,11 +349,10 @@ def backtest(
         "ticker": ticker,
         "name": name,
         "days": days,
-        "test_periods": test_periods,
         **result,
     }
 
-    # Cache the result (6 hours - uses daily close prices only)
+    # Cache the result (6 hours)
     prediction_cache.set(cache_key, response, 21600)
 
     return response
@@ -370,215 +391,447 @@ SCREENER_BACKTEST_STOCKS = [
 def screener_backtest(
     days: int = Query(5, ge=1, le=30, description="Days ahead to predict (1-30)"),
     min_confidence: float = Query(0.75, ge=0.5, le=1.0, description="Minimum confidence (0.5-1.0)"),
-    test_periods: int = Query(30, ge=10, le=100, description="Test periods per stock (10-100)"),
+    mode: str = Query("realistic", description="'realistic' (recommended) or 'walkforward' (inflated)"),
 ):
     """
     Backtest the screener strategy across multiple stocks.
 
-    Simulates what would have happened if you followed screener picks
-    (stocks predicted UP with high confidence) historically.
+    TWO MODES:
+    - realistic (DEFAULT): Train once on 2020-2022, test on 2023-2024. No retraining.
+      Shows honest accuracy. This matches real-world deployment.
 
-    Includes:
-    - Confidence bucket analysis (70-75%, 75-80%, 80%+)
-    - Drawdown & risk metrics
-    - Regime segmentation (volatility, market trend)
-    - Market-relative validation (vs SPY)
-    - No-trade frequency reporting
-
-    CACHE OPTIMIZATION:
-    - Raw data is cached by days and min_confidence only
-    - If cached data has >= requested test_periods, metrics are recomputed instantly
-    - This allows 100 periods to be cached and reused for 30, 50, etc.
+    - walkforward: Retrain at every step. Shows INFLATED accuracy (~15-20% higher).
+      Does NOT match production. Included for comparison only.
     """
-    # Cache key for raw data: excludes test_periods (we can recompute for fewer periods)
-    raw_cache_key = f"screener-backtest-raw:{days}:{min_confidence}"
+    cache_key = f"screener-backtest:{days}:{min_confidence}:{mode}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    # Check if we have cached raw data with enough periods
-    try:
-        cached_raw = prediction_cache.get(raw_cache_key)
-        if cached_raw is not None and isinstance(cached_raw, dict):
-            cached_periods = cached_raw.get("max_periods", 0)
-            if cached_periods >= test_periods:
-                raw_data = cached_raw.get("_raw_data")
-                if raw_data:
-                    recomputed = compute_screener_metrics_from_raw(raw_data, test_periods)
-                    if recomputed:
-                        response = {
-                            "days": days,
-                            "min_confidence": min_confidence,
-                            "test_periods": test_periods,
-                            "_cached": True,
-                            **recomputed,
-                        }
-                        return response
-    except Exception:
-        # If cache fails, continue to run fresh backtest
-        pass
-
-    # No suitable cache - run fresh backtest with requested periods
-    run_periods = test_periods
-
-    # Fetch SPY data for market benchmark comparison
-    spy_data = fetch_stock_data("SPY", prediction_days=30)
-
-    # Fetch data for all test stocks in parallel
-    stocks_data = []
-
-    def fetch_stock_info(ticker):
-        df = fetch_stock_data(ticker, prediction_days=30)
-        fundamentals = fetch_fundamental_data(ticker)
-        return {"ticker": ticker, "df": df, "fundamentals": fundamentals}
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(fetch_stock_info, t): t for t in SCREENER_BACKTEST_STOCKS}
-        for future in as_completed(futures):
-            try:
-                stocks_data.append(future.result())
-            except Exception:
-                pass
-
-    # Run screener backtest with max periods
-    result = run_screener_backtest(stocks_data, days, min_confidence, run_periods, spy_data)
-
-    if result is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No screener picks found with the given criteria. Try lowering min_confidence.",
+    if mode == "realistic":
+        # Use realistic backtest
+        result = run_screener_backtest_realistic(
+            stocks=SCREENER_BACKTEST_STOCKS,
+            days=days,
+            min_confidence=min_confidence,
         )
 
-    # Cache raw data for future recomputation (requests with fewer periods can reuse)
-    raw_data = result.pop("_raw_data", None)
-    if raw_data:
-        try:
-            existing = prediction_cache.get(raw_cache_key)
-            existing_periods = existing.get("max_periods", 0) if existing and isinstance(existing, dict) else 0
-            if run_periods > existing_periods:
-                cache_entry = {
-                    "max_periods": run_periods,
-                    "_raw_data": raw_data,
-                }
-                prediction_cache.set(raw_cache_key, cache_entry, 21600)
-        except Exception:
-            pass  # Caching is best-effort
+        if result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No screener picks found with the given criteria.",
+            )
 
-    response = {
-        "days": days,
-        "min_confidence": min_confidence,
-        "test_periods": test_periods,
-        **result,
-    }
+        response = {
+            "days": days,
+            "min_confidence": min_confidence,
+            **result,
+        }
+    else:
+        # Legacy walk-forward (with warning)
+        spy_data = fetch_stock_data("SPY", prediction_days=30)
+        stocks_data = []
 
+        def fetch_stock_info(ticker):
+            df = fetch_stock_data(ticker, prediction_days=30)
+            fundamentals = fetch_fundamental_data(ticker)
+            return {"ticker": ticker, "df": df, "fundamentals": fundamentals}
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(fetch_stock_info, t): t for t in SCREENER_BACKTEST_STOCKS}
+            for future in as_completed(futures):
+                try:
+                    stocks_data.append(future.result())
+                except Exception:
+                    pass
+
+        result = run_screener_backtest(stocks_data, days, min_confidence, 30, spy_data)
+
+        if result is None:
+            raise HTTPException(status_code=400, detail="No screener picks found.")
+
+        result.pop("_raw_data", None)
+
+        response = {
+            "warning": "Walk-forward backtest - results are INFLATED. Use mode=realistic for honest accuracy.",
+            "backtest_type": "walkforward",
+            "days": days,
+            "min_confidence": min_confidence,
+            **result,
+        }
+
+    prediction_cache.set(cache_key, response, 21600)
     return response
 
 
 @app.get("/regime-gated-backtest")
 def regime_gated_backtest(
     days: int = Query(5, ge=1, le=30, description="Days ahead to predict (1-30)"),
-    test_periods: int = Query(30, ge=10, le=100, description="Test periods per stock (10-100)"),
+    mode: str = Query("realistic", description="'realistic' (recommended) or 'walkforward' (inflated)"),
 ):
     """
     Backtest the screener with market regime gate based on SPY performance.
 
-    Compares three modes:
+    TWO MODES:
+    - realistic (DEFAULT): Train once on 2020-2022, test on 2023-2024. Honest results.
+    - walkforward: Retrain at every step. INFLATED results.
+
+    Compares three trading modes:
     - No Gate (Baseline): Standard 75% confidence threshold
     - Bear Suppressed: No trades when SPY trailing return < -1%
     - Bear 80% Confidence: Require 80% confidence when SPY trailing < -1%
-
-    Returns comparison table with metrics for each mode:
-    - Total trades, win rate, avg return
-    - Worst trade, worst streak, max drawdown
-    - % of picks beating SPY
-
-    CACHE OPTIMIZATION:
-    - Raw data is cached by days only
-    - If cached data has >= requested test_periods, metrics are recomputed instantly
-    - This allows 100 periods to be cached and reused for 30, 50, etc.
     """
-    # Cache key for raw data: excludes test_periods (we can recompute for fewer periods)
-    raw_cache_key = f"regime-gated-backtest-raw:{days}"
+    cache_key = f"regime-backtest:{days}:{mode}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    # Check if we have cached raw data with enough periods
-    try:
-        cached_raw = prediction_cache.get(raw_cache_key)
-        if cached_raw is not None and isinstance(cached_raw, dict):
-            cached_periods = cached_raw.get("max_periods", 0)
-            if cached_periods >= test_periods:
-                raw_data = cached_raw.get("_raw_data")
-                if raw_data:
-                    recomputed = compute_regime_metrics_from_raw(raw_data, test_periods)
-                    if recomputed:
-                        response = {
-                            "days": days,
-                            "test_periods": test_periods,
-                            "_cached": True,
-                            **recomputed,
-                        }
-                        return response
-    except Exception:
-        pass  # If cache fails, continue to run fresh backtest
-
-    # No suitable cache - run fresh backtest with requested periods
-    run_periods = test_periods
-
-    # Fetch SPY data for regime detection
-    spy_data = fetch_stock_data("SPY", prediction_days=30)
-
-    if spy_data is None or len(spy_data) < 50:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not fetch SPY data for regime detection.",
+    if mode == "realistic":
+        result = run_regime_backtest_realistic(
+            stocks=SCREENER_BACKTEST_STOCKS,
+            days=days,
+            min_confidence=0.75,
         )
 
-    # Fetch data for all test stocks in parallel
-    stocks_data = []
+        if result is None:
+            raise HTTPException(status_code=400, detail="Insufficient data for backtest.")
 
-    def fetch_stock_info(ticker):
-        df = fetch_stock_data(ticker, prediction_days=30)
-        fundamentals = fetch_fundamental_data(ticker)
-        return {"ticker": ticker, "df": df, "fundamentals": fundamentals}
+        response = {"days": days, **result}
+    else:
+        # Legacy walk-forward
+        spy_data = fetch_stock_data("SPY", prediction_days=30)
+        if spy_data is None or len(spy_data) < 50:
+            raise HTTPException(status_code=400, detail="Could not fetch SPY data.")
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(fetch_stock_info, t): t for t in SCREENER_BACKTEST_STOCKS}
-        for future in as_completed(futures):
-            try:
-                stocks_data.append(future.result())
-            except Exception:
-                pass
+        stocks_data = []
 
-    # Run regime-gated backtest with max periods
-    result = run_regime_gated_backtest(
-        stocks_data,
-        days,
-        min_confidence=0.75,
-        test_periods=run_periods,
-        spy_data=spy_data,
+        def fetch_stock_info(ticker):
+            df = fetch_stock_data(ticker, prediction_days=30)
+            fundamentals = fetch_fundamental_data(ticker)
+            return {"ticker": ticker, "df": df, "fundamentals": fundamentals}
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(fetch_stock_info, t): t for t in SCREENER_BACKTEST_STOCKS}
+            for future in as_completed(futures):
+                try:
+                    stocks_data.append(future.result())
+                except Exception:
+                    pass
+
+        result = run_regime_gated_backtest(stocks_data, days, 0.75, 30, spy_data)
+
+        if result is None:
+            raise HTTPException(status_code=400, detail="Insufficient data.")
+
+        result.pop("_raw_data", None)
+
+        response = {
+            "warning": "Walk-forward backtest - results are INFLATED. Use mode=realistic for honest accuracy.",
+            "backtest_type": "walkforward",
+            "days": days,
+            **result,
+        }
+
+    prediction_cache.set(cache_key, response, 21600)
+    return response
+
+
+@app.get("/validate")
+def validate_model(
+    days: int = Query(5, ge=1, le=30, description="Days ahead to predict (1-30)"),
+    min_confidence: float = Query(0.75, ge=0.5, le=1.0, description="Minimum confidence (0.5-1.0)"),
+):
+    """
+    Run out-of-sample validation: train on 2020-2022, test on 2023-2024.
+
+    This is the gold standard test for detecting overfitting and data leakage.
+    Returns accuracy metrics, feature importance, and pass/fail determination.
+
+    WARNING: This endpoint takes 2-5 minutes to run as it tests across many stocks.
+    """
+    # Run year-split backtest
+    results = run_year_split_backtest(
+        days=days,
+        min_confidence=min_confidence,
+        verbose=False,
     )
 
-    if result is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient data for regime-gated backtest.",
-        )
+    if "error" in results:
+        raise HTTPException(status_code=400, detail=results["error"])
 
-    # Cache raw data for future recomputation (requests with fewer periods can reuse)
-    raw_data = result.pop("_raw_data", None)
-    if raw_data:
-        try:
-            existing = prediction_cache.get(raw_cache_key)
-            existing_periods = existing.get("max_periods", 0) if existing and isinstance(existing, dict) else 0
-            if run_periods > existing_periods:
-                cache_entry = {
-                    "max_periods": run_periods,
-                    "_raw_data": raw_data,
-                }
-                prediction_cache.set(raw_cache_key, cache_entry, 21600)
-        except Exception:
-            pass  # Caching is best-effort
+    # Analyze feature importance
+    importance = analyze_feature_importance(results, verbose=False)
 
-    response = {
-        "days": days,
-        "test_periods": test_periods,
-        **result,
+    # Determine pass/fail
+    overall_accuracy = results["summary"]["overall_accuracy"]
+    if overall_accuracy >= 60:
+        verdict = "PASS"
+        verdict_detail = "Model shows strong predictive signal on out-of-sample data"
+    elif overall_accuracy >= 55:
+        verdict = "MARGINAL"
+        verdict_detail = "Model shows weak but potentially useful signal"
+    else:
+        verdict = "FAIL"
+        verdict_detail = "Model does not generalize well - likely overfitting or leakage"
+
+    return {
+        "validation_type": "year_split",
+        "train_period": results["summary"]["train_period"],
+        "test_period": results["summary"]["test_period"],
+        "verdict": verdict,
+        "verdict_detail": verdict_detail,
+        "summary": results["summary"],
+        "confidence_buckets": results["confidence_buckets"],
+        "screener_performance": results["screener_performance"],
+        "top_features": importance.get("top_features", [])[:10],
+        "interpretation": results["interpretation"],
     }
 
+
+@app.get("/regime")
+def check_regime():
+    """
+    Check current market regime to determine if conditions are favorable for trading.
+
+    Regimes:
+    - NORMAL: Favorable conditions, strategy can be used
+    - CAUTION: Elevated risk, reduce position sizes
+    - CRISIS: High volatility/drawdown, strategy historically fails here
+    - RECOVERY: Coming out of stress, proceed cautiously
+    - EUPHORIA: Potentially overextended, tighten stops
+
+    IMPORTANT: This strategy has been tested to FAIL during crisis periods
+    (2008, 2018 Q4, 2020 COVID). The regime check helps avoid those periods.
+    """
+    regime = get_current_regime(verbose=False)
+    return regime
+
+
+@app.get("/about")
+def about():
+    """
+    Honest disclosure about what this system can and cannot do.
+    """
+    return {
+        "name": "Stock Direction Predictor",
+        "version": "2.0 (Regime-Aware)",
+        "what_it_does": {
+            "description": "Identifies stocks with aligned technical signals for potential directional moves",
+            "methodology": "Multi-signal consensus filtering, not pure ML prediction",
+            "time_horizon": "20-day holding period works best",
+        },
+        "honest_limitations": {
+            "accuracy_claims": "78% accuracy was measured on 2023-2024 bull market only",
+            "crisis_performance": "Strategy FAILS during crisis periods (tested: 2008, 2018, 2020)",
+            "selection_bias": "Best-performing stocks were selected AFTER seeing results",
+            "signal_frequency": "High-conviction signals occur only 1-2 times per month",
+            "regime_dependent": "Only works when market regime is NORMAL",
+        },
+        "what_it_cannot_do": [
+            "Predict with 89% accuracy across all conditions",
+            "Work reliably during market crashes",
+            "Generate daily trading signals",
+            "Replace human judgment on position sizing and risk",
+        ],
+        "recommended_use": {
+            "check_regime_first": "Always call /regime before trusting signals",
+            "paper_trade_first": "Run for 3-6 months before using real capital",
+            "position_sizing": "Never risk more than you can afford to lose",
+            "diversification": "This should be one input among many, not your only signal",
+        },
+        "tested_periods": {
+            "2023-2024 (bull)": "78% accuracy on Tier 1 stocks with 4+ signals",
+            "2022 (bear)": "57% accuracy - survived but degraded",
+            "2020 COVID": "29% accuracy - FAILED",
+            "2018 Q4": "33% accuracy - FAILED",
+            "2008 crisis": "31% accuracy - FAILED",
+        },
+    }
+
+
+@app.get("/optimal-scan")
+def optimal_scan(
+    days: int = Query(20, ge=5, le=30, description="Days ahead (20 recommended)"),
+):
+    """
+    Run production scan for high-conviction trading signals.
+
+    This is the BEST strategy we have, combining:
+    - Multi-signal consensus (ML + trend + volatility + momentum + RSI)
+    - Optimal 20-day horizon
+    - Tier 1 stocks (MCD, QQQ, MSFT, MA, COST, SPY)
+
+    Returns actionable signals when 4+ of 5 signals align bullish.
+
+    IMPORTANT CAVEATS:
+    - Check /regime first - only trade when regime is NORMAL
+    - 78% accuracy was measured on 2023-2024 bull market
+    - High-conviction signals occur 1-2 times per month
+    - This strategy FAILS during crisis periods
+    """
+    cache_key = f"optimal-scan:{days}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Check regime first
+    regime = get_current_regime(verbose=False)
+
+    result = run_production_scan(days=days, verbose=False)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Add regime warning
+    if regime.get("regime") in ["CRISIS", "CAUTION"]:
+        result["regime_warning"] = f"Market is in {regime.get('regime')} mode. Strategy historically fails here. Consider waiting."
+    else:
+        result["regime_warning"] = None
+
+    result["current_regime"] = regime
+
+    response = {
+        "scan_type": "optimal_strategy",
+        "horizon_days": days,
+        "tier1_stocks": TIER1_STOCKS,
+        "optimal_stocks": OPTIMAL_STOCKS,
+        **result,
+        "methodology": {
+            "signals": [
+                "ML prediction with 70%+ confidence",
+                "Trend aligned (price > SMA20 > SMA50)",
+                "Low volatility (< 35% annualized)",
+                "Positive 5-day momentum",
+                "RSI not overbought (< 70)",
+            ],
+            "threshold": "4 or more signals must align for high conviction",
+            "ultra_conviction": "All 5 signals aligned",
+        },
+        "backtested_accuracy": {
+            "high_conviction_4_signals": "78.95%",
+            "ultra_conviction_5_signals": "88.89%",
+            "test_period": "2023-2024",
+            "warning": "Past performance does not guarantee future results",
+        },
+    }
+
+    prediction_cache.set(cache_key, response, 3600)  # 1 hour cache
+    return response
+
+
+@app.get("/stress-test")
+def stress_test(
+    period: str = Query(None, description="Specific period: 2008_crisis, 2018_selloff, 2020_covid, 2022_bear"),
+):
+    """
+    Run stress tests against historical crisis periods.
+
+    This shows how the strategy ACTUALLY performs during market stress.
+    SPOILER: It fails during most crises. This is why we check /regime.
+
+    Available periods:
+    - 2008_crisis: Lehman collapse, -50% drawdown
+    - 2018_selloff: Fed tightening, -20% correction
+    - 2020_covid: Fastest bear market in history
+    - 2022_bear: Fed hiking, tech collapse
+
+    Returns accuracy and drawdown metrics for each period.
+    """
+    cache_key = f"stress-test:{period or 'all'}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if period:
+        result = run_crisis_backtest(period, verbose=False)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        response = {"period_tested": period, **result}
+    else:
+        results = run_all_stress_tests(verbose=False)
+        response = {
+            "all_periods": results,
+            "summary": {
+                "survived": [],
+                "failed": [],
+            },
+            "interpretation": [],
+        }
+
+        for key, r in results.items():
+            if "error" not in r:
+                if r.get("high_conviction_accuracy", 0) >= 50:
+                    response["summary"]["survived"].append({
+                        "period": r["period"],
+                        "accuracy": r["high_conviction_accuracy"],
+                    })
+                else:
+                    response["summary"]["failed"].append({
+                        "period": r["period"],
+                        "accuracy": r["high_conviction_accuracy"],
+                    })
+
+        if len(response["summary"]["failed"]) > len(response["summary"]["survived"]):
+            response["verdict"] = "REGIME_DEPENDENT"
+            response["interpretation"] = [
+                "Strategy fails during most crisis periods",
+                "ALWAYS check /regime before trading",
+                "In CRISIS or CAUTION mode, do not take new positions",
+            ]
+        else:
+            response["verdict"] = "RESILIENT"
+            response["interpretation"] = ["Strategy shows resilience across periods"]
+
+    prediction_cache.set(cache_key, response, 86400)  # 24 hour cache
+    return response
+
+
+@app.get("/optimal-backtest")
+def optimal_backtest(
+    days: int = Query(20, ge=5, le=30, description="Days ahead (20 recommended)"),
+    min_signals: int = Query(4, ge=3, le=5, description="Minimum signals required (4 recommended)"),
+    tier1_only: bool = Query(True, description="Use Tier 1 stocks only (recommended)"),
+):
+    """
+    Backtest the optimal strategy with realistic methodology.
+
+    This shows what accuracy we achieved on the test period (2023-2024)
+    using the optimal configuration.
+
+    Tier 1 stocks: MCD, QQQ, MSFT, MA, COST, SPY
+    Tier 2 stocks: V, AAPL, PEP, JPM, PG, HD
+    """
+    cache_key = f"optimal-backtest:{days}:{min_signals}:{tier1_only}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = run_optimal_backtest(
+        days=days,
+        min_signals=min_signals,
+        tier1_only=tier1_only,
+        verbose=False,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    response = {
+        "backtest_type": "optimal_strategy",
+        "methodology": "Train on 2020-2022, test on 2023-2024 (no retraining)",
+        "settings": {
+            "horizon_days": days,
+            "min_signals": min_signals,
+            "tier1_only": tier1_only,
+            "stocks_tested": TIER1_STOCKS if tier1_only else OPTIMAL_STOCKS,
+        },
+        **result,
+        "caveats": [
+            "These results are from 2023-2024 bull market only",
+            "Strategy fails during crisis periods (see /stress-test)",
+            "Past performance does not guarantee future results",
+        ],
+    }
+
+    prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
     return response

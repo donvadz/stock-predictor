@@ -1,0 +1,166 @@
+================================================================================
+STOCK PREDICTABILITY ANALYSIS REPORT
+Generated: 2026-02-09 17:26:40
+================================================================================
+
+================================================================================
+1. SUMMARY STATISTICS
+================================================================================
+Total stocks analyzed: 25
+Average accuracy: 52.0%
+Accuracy range: 41% to 64%
+Accuracy std dev: 5.7%
+
+----------------------------------------
+Top 5 Performers:
+  MCD       64%  (Consumer Cyclical, vol=18%)
+  HD        58%  (Consumer Cyclical, vol=22%)
+  QQQ       58%  (Unknown, vol=21%)
+  MSFT      58%  (Technology, vol=24%)
+  AAPL      57%  (Technology, vol=28%)
+
+Bottom 5 Performers:
+  TSLA      41%  (Consumer Cyclical, vol=63%)
+  LLY       45%  (Healthcare, vol=37%)
+  GOOGL     46%  (Communication Services, vol=30%)
+  PFE       46%  (Healthcare, vol=25%)
+  NKE       46%  (Consumer Cyclical, vol=38%)
+
+================================================================================
+2. CORRELATION ANALYSIS
+================================================================================
+
+Characteristics vs Prediction Accuracy (sorted by correlation):
+----------------------------------------------------------------------
+Characteristic             Pearson r    p-value Spearman r   Signif
+----------------------------------------------------------------------
+max_drawdown                   0.540      0.005      0.523        *
+roe                            0.336      0.127      0.352         
+profit_margin                  0.087      0.695      0.188         
+price                          0.037      0.860      0.165         
+return_skewness                0.032      0.879     -0.061         
+return_kurtosis                0.023      0.915      0.092         
+dividend_yield                 0.007      0.973      0.154         
+analyst_rating                -0.031      0.888     -0.066         
+short_percent                 -0.068      0.748     -0.430         
+avg_dollar_volume             -0.110      0.602     -0.132         
+market_cap                    -0.121      0.565     -0.119         
+market_cap_log                -0.126      0.549     -0.119         
+avg_volume                    -0.162      0.439     -0.147         
+beta                          -0.251      0.226     -0.112         
+distance_from_52w_high        -0.293      0.155     -0.269         
+volume_volatility             -0.380      0.061     -0.406        *
+pe_ratio                      -0.422      0.040     -0.204        *
+forward_pe                    -0.426      0.043     -0.280        *
+atr_pct                       -0.443      0.027     -0.425        *
+volatility_annual             -0.459      0.021     -0.525        *
+volatility_daily              -0.459      0.021     -0.525        *
+
+================================================================================
+3. KEY FINDINGS
+================================================================================
+
+[VOLATILITY] STRONG NEGATIVE correlation (r=-0.459)
+  -> LOW volatility stocks are MORE predictable
+  -> This supports the hypothesis that stable, defensive stocks predict better
+
+[BETA] NEGATIVE correlation (r=-0.251)
+  -> Low-beta (defensive) stocks predict better
+
+================================================================================
+4. SECTOR ANALYSIS
+================================================================================
+
+Sector                       Avg Acc      Std    Count
+-------------------------------------------------------
+Unknown                        57.0%     1.4        2
+Technology                     53.8%     4.3        4
+Financial Services             52.6%     4.7        5
+Consumer Cyclical              52.3%     8.7        6
+Consumer Defensive             51.0%     5.7        2
+Communication Services         49.0%     4.2        2
+Healthcare                     48.8%     5.0        4
+
+================================================================================
+5. STOCK TYPE ANALYSIS
+================================================================================
+
+Stock Type                   Avg Acc      Std    Count
+-------------------------------------------------------
+Stable Tech                    57.5%     0.7        2
+ETF                            57.0%     1.4        2
+Defensive                      52.6%     6.4        9
+Financial                      50.3%     4.9        3
+Consumer Cyclical              50.0%     7.3        5
+High-Growth Tech               50.0%     0.0        2
+Other                          49.0%     4.2        2
+
+================================================================================
+6. VOLATILITY QUARTILE ANALYSIS
+================================================================================
+
+Volatility Quartile          Avg Acc      Std    Count
+-------------------------------------------------------
+Q1 (Low)                       57.3%     3.1        7
+Q2                             52.2%     5.7        6
+Q3                             49.0%     4.6        6
+Q4 (High)                      48.8%     5.2        6
+
+================================================================================
+7. DETAILED STOCK BREAKDOWN
+================================================================================
+
+Ticker   Acc Sector                 Vol%   Beta Type              
+---------------------------------------------------------------------------
+MCD      64% Consumer Cyclical       18%   0.53 Defensive         
+HD       58% Consumer Cyclical       22%   1.09 Consumer Cyclical 
+QQQ      58% Unknown                 21%   1.00 ETF               
+MSFT     58% Technology              24%   1.08 Stable Tech       
+AAPL     57% Technology              28%   1.11 Stable Tech       
+RIVN     57% Consumer Cyclical       70%   1.77 Consumer Cyclical 
+MA       57% Financial Services      20%   0.82 Defensive         
+SPY      56% Unknown                 16%   1.00 ETF               
+JNJ      56% Healthcare              18%   0.35 Defensive         
+BAC      56% Financial Services      25%   1.27 Financial         
+KO       55% Consumer Defensive      16%   0.36 Defensive         
+V        55% Financial Services      21%   0.78 Defensive         
+META     52% Communication Services    35%   1.28 Other             
+NVDA     50% Technology              51%   2.31 High-Growth Tech  
+AMD      50% Technology              56%   1.95 High-Growth Tech  
+JPM      48% Financial Services      25%   1.05 Financial         
+UNH      48% Healthcare              41%   0.41 Defensive         
+AMZN     48% Consumer Cyclical       32%   1.39 Consumer Cyclical 
+WMT      47% Consumer Defensive      22%   0.67 Defensive         
+COIN     47% Financial Services      80%   3.70 Financial         
+GOOGL    46% Communication Services    30%   1.09 Other             
+PFE      46% Healthcare              25%   0.44 Defensive         
+NKE      46% Consumer Cyclical       38%   1.28 Consumer Cyclical 
+LLY      45% Healthcare              37%   0.39 Defensive         
+TSLA     41% Consumer Cyclical       63%   1.89 Consumer Cyclical 
+
+================================================================================
+8. CONCLUSIONS & RECOMMENDATIONS
+================================================================================
+
+Best performers (>= 56% accuracy):
+  - Average volatility: 26.2%
+  - Average beta: 1.00
+
+Worst performers (<= 48% accuracy):
+  - Average volatility: 39.3%
+  - Average beta: 1.23
+
+[FINDING] Lower volatility stocks ARE more predictable
+[FINDING] Lower beta (defensive) stocks ARE more predictable
+
+[SECTOR INSIGHT] Best predicting sectors: Unknown
+[SECTOR INSIGHT] Worst predicting sectors: Communication Services, Healthcare
+
+----------------------------------------
+RECOMMENDATIONS:
+----------------------------------------
+1. Focus model predictions on low-volatility, defensive stocks
+2. Apply higher confidence thresholds to volatile/high-growth stocks
+3. Consider sector-specific models for improved accuracy
+4. ETFs (SPY, QQQ) show moderate predictability - good baseline
+5. Be cautious with model predictions for TSLA, COIN, LLY, GOOGL
