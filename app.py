@@ -4,6 +4,9 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from job_manager import job_manager, Job, JobStatus
 
 from cache import prediction_cache
 from config import (
@@ -885,3 +888,613 @@ def optimal_backtest(
 
     prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
     return response
+
+
+# =============================================================================
+# JOB API ENDPOINTS - For cancellable long-running operations
+# =============================================================================
+
+
+class JobStartRequest(BaseModel):
+    """Request body for starting a job."""
+    days: int = 5
+    min_confidence: float = 0.75
+    ticker: Optional[str] = None
+    min_signals: int = 4
+    tier1_only: bool = True
+    period: Optional[str] = None
+
+
+# Worker functions for each job type
+def _run_screener_job(job: Job, days: int, min_confidence: float) -> dict:
+    """Run screener scan with cancellation support."""
+    cache_key = f"screener:{days}"
+    cached = prediction_cache.get(cache_key)
+
+    if cached is not None:
+        # Apply confidence filter
+        matches = [m for m in cached["all_bullish"] if m["confidence"] >= min_confidence]
+        market_regime = get_market_regime()
+        regime_filtered_matches = [
+            m for m in matches
+            if m["confidence"] >= market_regime["recommended_confidence"]
+        ]
+        return {
+            "days": days,
+            "min_confidence": min_confidence,
+            "stocks_scanned": cached["stocks_scanned"],
+            "errors": cached["errors"],
+            "matches": matches,
+            "market_regime": {
+                "regime": market_regime["regime"],
+                "spy_return": market_regime["spy_return"],
+                "recommended_confidence": market_regime["recommended_confidence"],
+                "description": market_regime["description"],
+                "regime_filtered_count": len(regime_filtered_matches),
+            },
+        }
+
+    # Run fresh scan
+    all_bullish = []
+    scanned = 0
+    errors = 0
+    total = len(STOCK_LIST)
+
+    job.progress_message = f"Scanning {total} stocks..."
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_predict_single, ticker, days): ticker for ticker in STOCK_LIST}
+
+        for future in as_completed(futures):
+            # Check for cancellation
+            if job.cancelled:
+                executor.shutdown(wait=False, cancel_futures=True)
+                return None
+
+            result = future.result()
+            scanned += 1
+            job.progress = int((scanned / total) * 100)
+            job.progress_message = f"Scanned {scanned}/{total} stocks"
+
+            if result is None:
+                errors += 1
+            elif result["direction"] == "up":
+                all_bullish.append({
+                    "ticker": result["ticker"],
+                    "name": result["name"],
+                    "confidence": result["confidence"],
+                    "latest_price": result["latest_price"],
+                    "predicted_price": result["predicted_price"],
+                    "predicted_change": result["predicted_change"],
+                })
+
+    if job.cancelled:
+        return None
+
+    all_bullish.sort(key=lambda x: x["confidence"], reverse=True)
+
+    cached_data = {
+        "stocks_scanned": scanned,
+        "errors": errors,
+        "all_bullish": all_bullish,
+    }
+    prediction_cache.set(cache_key, cached_data, SCREENER_CACHE_TTL)
+
+    matches = [m for m in all_bullish if m["confidence"] >= min_confidence]
+    market_regime = get_market_regime()
+    regime_filtered_matches = [
+        m for m in matches
+        if m["confidence"] >= market_regime["recommended_confidence"]
+    ]
+
+    return {
+        "days": days,
+        "min_confidence": min_confidence,
+        "stocks_scanned": scanned,
+        "errors": errors,
+        "matches": matches,
+        "market_regime": {
+            "regime": market_regime["regime"],
+            "spy_return": market_regime["spy_return"],
+            "recommended_confidence": market_regime["recommended_confidence"],
+            "description": market_regime["description"],
+            "regime_filtered_count": len(regime_filtered_matches),
+        },
+    }
+
+
+def _run_backtest_job(job: Job, ticker: str, days: int) -> dict:
+    """Run backtest with cancellation support."""
+    ticker = ticker.upper()
+    cache_key = f"backtest:{ticker}:{days}:realistic"
+
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = f"Fetching data for {ticker}..."
+    job.progress = 10
+
+    if job.cancelled:
+        return None
+
+    df = fetch_stock_data(ticker, prediction_days=30)
+    if df is None or len(df) == 0:
+        raise ValueError(f"No data found for ticker: {ticker}")
+
+    job.progress = 20
+    job.progress_message = "Running backtest..."
+
+    if job.cancelled:
+        return None
+
+    fundamentals = fetch_fundamental_data(ticker)
+
+    job.progress = 40
+
+    if job.cancelled:
+        return None
+
+    result = run_backtest_realistic(df, days, fundamentals)
+
+    job.progress = 90
+
+    if result is None:
+        raise ValueError("Insufficient data for backtesting.")
+
+    if job.cancelled:
+        return None
+
+    name = fundamentals.get("name", ticker) if fundamentals else ticker
+
+    response = {
+        "ticker": ticker,
+        "name": name,
+        "days": days,
+        **result,
+    }
+
+    prediction_cache.set(cache_key, response, 21600)
+    job.progress = 100
+
+    return response
+
+
+def _run_screener_backtest_job(job: Job, days: int, min_confidence: float) -> dict:
+    """Run screener backtest with cancellation support."""
+    cache_key = f"screener-backtest:{days}:{min_confidence}:realistic"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = "Running realistic backtest..."
+    job.progress = 5
+
+    if job.cancelled:
+        return None
+
+    # Use realistic backtest - pass job for cancellation checking
+    result = run_screener_backtest_realistic(
+        stocks=SCREENER_BACKTEST_STOCKS,
+        days=days,
+        min_confidence=min_confidence,
+    )
+
+    # Check periodically during long operation
+    if job.cancelled:
+        return None
+
+    job.progress = 90
+
+    if result is None:
+        raise ValueError("No screener picks found with the given criteria.")
+
+    response = {
+        "days": days,
+        "min_confidence": min_confidence,
+        **result,
+    }
+
+    prediction_cache.set(cache_key, response, 21600)
+    job.progress = 100
+
+    return response
+
+
+def _run_regime_gated_backtest_job(job: Job, days: int) -> dict:
+    """Run regime-gated backtest with cancellation support."""
+    cache_key = f"regime-backtest:{days}:realistic"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = "Running regime-gated backtest..."
+    job.progress = 5
+
+    if job.cancelled:
+        return None
+
+    result = run_regime_backtest_realistic(
+        stocks=SCREENER_BACKTEST_STOCKS,
+        days=days,
+        min_confidence=0.75,
+    )
+
+    if job.cancelled:
+        return None
+
+    job.progress = 90
+
+    if result is None:
+        raise ValueError("Insufficient data for backtest.")
+
+    response = {"days": days, **result}
+
+    prediction_cache.set(cache_key, response, 21600)
+    job.progress = 100
+
+    return response
+
+
+def _run_stress_test_job(job: Job, period: Optional[str] = None) -> dict:
+    """Run stress test with cancellation support."""
+    cache_key = f"stress-test:{period or 'all'}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = "Running stress tests..."
+    job.progress = 10
+
+    if job.cancelled:
+        return None
+
+    if period:
+        result = run_crisis_backtest(period, verbose=False)
+        if "error" in result:
+            raise ValueError(result["error"])
+        response = {"period_tested": period, **result}
+    else:
+        results = run_all_stress_tests(verbose=False)
+
+        if job.cancelled:
+            return None
+
+        job.progress = 80
+
+        response = {
+            "all_periods": results,
+            "summary": {
+                "survived": [],
+                "failed": [],
+            },
+            "interpretation": [],
+        }
+
+        for key, r in results.items():
+            if "error" not in r:
+                if r.get("high_conviction_accuracy", 0) >= 50:
+                    response["summary"]["survived"].append({
+                        "period": r["period"],
+                        "accuracy": r["high_conviction_accuracy"],
+                    })
+                else:
+                    response["summary"]["failed"].append({
+                        "period": r["period"],
+                        "accuracy": r["high_conviction_accuracy"],
+                    })
+
+        if len(response["summary"]["failed"]) > len(response["summary"]["survived"]):
+            response["verdict"] = "REGIME_DEPENDENT"
+            response["interpretation"] = [
+                "Strategy fails during most crisis periods",
+                "ALWAYS check /regime before trading",
+                "In CRISIS or CAUTION mode, do not take new positions",
+            ]
+        else:
+            response["verdict"] = "RESILIENT"
+            response["interpretation"] = ["Strategy shows resilience across periods"]
+
+    if job.cancelled:
+        return None
+
+    prediction_cache.set(cache_key, response, 86400)
+    job.progress = 100
+
+    return response
+
+
+def _run_optimal_backtest_job(job: Job, days: int, min_signals: int, tier1_only: bool) -> dict:
+    """Run optimal backtest with cancellation support."""
+    cache_key = f"optimal-backtest:{days}:{min_signals}:{tier1_only}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = "Running optimal strategy backtest..."
+    job.progress = 10
+
+    if job.cancelled:
+        return None
+
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+    stocks_tested = tier1_stocks if tier1_only else (tier1_stocks + tier2_stocks)
+
+    if days <= 2:
+        horizon_used = 2
+    elif days == 3:
+        horizon_used = 3
+    elif days == 4:
+        horizon_used = 4
+    elif days == 5:
+        horizon_used = 5
+    else:
+        horizon_used = 20
+
+    job.progress = 20
+
+    if job.cancelled:
+        return None
+
+    result = run_optimal_backtest(
+        days=days,
+        min_signals=min_signals,
+        tier1_only=tier1_only,
+        verbose=False,
+    )
+
+    if job.cancelled:
+        return None
+
+    job.progress = 90
+
+    if "error" in result:
+        raise ValueError(result["error"])
+
+    response = {
+        "backtest_type": "optimal_strategy",
+        "methodology": "Train on 2020-2022, test on 2023-2024 (no retraining)",
+        "settings": {
+            "horizon_days": days,
+            "horizon_tier_used": horizon_used,
+            "min_signals": min_signals,
+            "tier1_only": tier1_only,
+            "stocks_tested": stocks_tested,
+            "tier1_stocks": tier1_stocks,
+            "tier2_stocks": tier2_stocks,
+        },
+        **result,
+        "horizon_info": {
+            "description": f"Using stocks optimized for {horizon_used}-day horizon",
+            "tier1_count": len(tier1_stocks),
+            "tier2_count": len(tier2_stocks),
+        },
+        "caveats": [
+            "These results are from 2023-2024 bull market only",
+            "Strategy fails during crisis periods (see /stress-test)",
+            "Past performance does not guarantee future results",
+        ],
+    }
+
+    prediction_cache.set(cache_key, response, 21600)
+    job.progress = 100
+
+    return response
+
+
+def _run_optimal_scan_job(job: Job, days: int) -> dict:
+    """Run optimal scan with cancellation support."""
+    cache_key = f"optimal-scan:{days}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    job.progress_message = "Running optimal scan..."
+    job.progress = 10
+
+    if job.cancelled:
+        return None
+
+    regime = get_current_regime(verbose=False)
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+    optimal_stocks = tier1_stocks + tier2_stocks
+
+    job.progress = 30
+
+    if job.cancelled:
+        return None
+
+    result = run_production_scan(days=days, verbose=False)
+
+    if job.cancelled:
+        return None
+
+    job.progress = 80
+
+    if "error" in result:
+        raise ValueError(result["error"])
+
+    if regime.get("regime") in ["CRISIS", "CAUTION"]:
+        result["regime_warning"] = f"Market is in {regime.get('regime')} mode. Strategy historically fails here. Consider waiting."
+    else:
+        result["regime_warning"] = None
+
+    result["current_regime"] = regime
+
+    if days <= 2:
+        horizon_used = 2
+    elif days == 3:
+        horizon_used = 3
+    elif days == 4:
+        horizon_used = 4
+    elif days == 5:
+        horizon_used = 5
+    else:
+        horizon_used = 20
+
+    response = {
+        "scan_type": "optimal_strategy",
+        "horizon_days": days,
+        "horizon_tier_used": horizon_used,
+        "tier1_stocks": tier1_stocks,
+        "tier2_stocks": tier2_stocks,
+        "optimal_stocks": optimal_stocks,
+        "available_horizons": [2, 3, 4, 5, 20],
+        **result,
+        "methodology": {
+            "signals": [
+                "ML prediction with 70%+ confidence",
+                "Trend aligned (price > SMA20 > SMA50)",
+                "Low volatility (< 35% annualized)",
+                "Positive 5-day momentum",
+                "RSI not overbought (< 70)",
+            ],
+            "threshold": "4 or more signals must align for high conviction",
+            "ultra_conviction": "All 5 signals aligned",
+        },
+        "horizon_info": {
+            "description": f"Using stocks optimized for {horizon_used}-day horizon",
+            "tier1_count": len(tier1_stocks),
+            "tier2_count": len(tier2_stocks),
+            "total_stocks": len(optimal_stocks),
+        },
+    }
+
+    prediction_cache.set(cache_key, response, 3600)
+    job.progress = 100
+
+    return response
+
+
+# Job type to worker function mapping
+JOB_WORKERS = {
+    "screener": lambda job, params: _run_screener_job(
+        job,
+        params.get("days", 5),
+        params.get("min_confidence", 0.75),
+    ),
+    "backtest": lambda job, params: _run_backtest_job(
+        job,
+        params.get("ticker", "AAPL"),
+        params.get("days", 5),
+    ),
+    "screener-backtest": lambda job, params: _run_screener_backtest_job(
+        job,
+        params.get("days", 5),
+        params.get("min_confidence", 0.75),
+    ),
+    "regime-gated-backtest": lambda job, params: _run_regime_gated_backtest_job(
+        job,
+        params.get("days", 5),
+    ),
+    "stress-test": lambda job, params: _run_stress_test_job(
+        job,
+        params.get("period"),
+    ),
+    "optimal-backtest": lambda job, params: _run_optimal_backtest_job(
+        job,
+        params.get("days", 20),
+        params.get("min_signals", 4),
+        params.get("tier1_only", True),
+    ),
+    "optimal-scan": lambda job, params: _run_optimal_scan_job(
+        job,
+        params.get("days", 20),
+    ),
+}
+
+
+@app.post("/jobs/{job_type}")
+def start_job(job_type: str, request: JobStartRequest):
+    """
+    Start a background job and return the job ID immediately.
+
+    The job runs in a background thread and can be:
+    - Monitored via GET /jobs/{job_id}/status
+    - Cancelled via POST /jobs/{job_id}/cancel
+
+    Job types:
+    - screener: Scan stocks for bullish predictions
+    - backtest: Run backtest on a single ticker
+    - screener-backtest: Backtest screener strategy
+    - regime-gated-backtest: Backtest with regime gating
+    - stress-test: Run crisis stress tests
+    - optimal-backtest: Backtest optimal strategy
+    - optimal-scan: Run optimal scan
+    """
+    if job_type not in JOB_WORKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown job type: {job_type}. Valid types: {list(JOB_WORKERS.keys())}",
+        )
+
+    job = job_manager.create_job(job_type)
+    params = request.model_dump()
+
+    def worker(j: Job):
+        return JOB_WORKERS[job_type](j, params)
+
+    job_manager.start_job(job, worker)
+
+    return {
+        "job_id": job.id,
+        "job_type": job_type,
+        "status": job.status.value,
+        "message": "Job started. Poll /jobs/{job_id}/status for progress.",
+    }
+
+
+@app.get("/jobs/{job_id}/status")
+def get_job_status(job_id: str):
+    """
+    Get the current status and progress of a job.
+
+    Returns:
+    - status: pending, running, completed, failed, cancelled
+    - progress: 0-100 percentage
+    - progress_message: Human-readable progress description
+    - result: The job result (only when completed)
+    - error: Error message (only when failed)
+    - elapsed_seconds: Time since job started
+    """
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    return job.to_dict()
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    """
+    Request cancellation of a running job.
+
+    The job will stop at the next cancellation checkpoint.
+    This is typically after processing the current item.
+
+    Returns success if cancellation was requested,
+    even if the job has already completed.
+    """
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+        return {
+            "job_id": job_id,
+            "status": job.status.value,
+            "message": f"Job already finished with status: {job.status.value}",
+        }
+
+    success = job_manager.cancel_job(job_id)
+    return {
+        "job_id": job_id,
+        "status": "cancelling" if success else job.status.value,
+        "message": "Cancellation requested. Job will stop at next checkpoint." if success else "Could not cancel job.",
+    }
+
+
+@app.get("/jobs")
+def list_jobs(job_type: Optional[str] = Query(None, description="Filter by job type")):
+    """List all jobs, optionally filtered by type."""
+    return {"jobs": job_manager.list_jobs(job_type)}

@@ -2386,3 +2386,261 @@ footer {
     font-size: 1.3rem;
   }
 }
+
+/* =====================================================
+   CANCELLABLE JOBS - Progress Bar & Cancel Button
+   ===================================================== */
+
+/* Job Progress Container */
+.job-progress-container {
+  margin-top: 16px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  border: 1px solid #e0e0e0;
+}
+
+.job-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.job-progress-text {
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.job-progress-percent {
+  font-weight: 600;
+  color: #1565c0;
+  font-size: 0.9rem;
+}
+
+/* Progress Bar */
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a90d9, #1565c0);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-fill.cancelled {
+  background: #ff9800;
+}
+
+.progress-bar-fill.completed {
+  background: #4caf50;
+}
+
+.progress-bar-fill.failed {
+  background: #f44336;
+}
+
+/* Job Timer */
+.job-timer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.job-elapsed {
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  color: #1565c0;
+}
+
+/* Cancel Button */
+.cancel-button {
+  background: #f44336 !important;
+  color: white !important;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cancel-button:hover:not(:disabled) {
+  background: #d32f2f !important;
+  transform: translateY(-1px);
+}
+
+.cancel-button:disabled {
+  background: #ffcdd2 !important;
+  cursor: not-allowed;
+}
+
+.cancel-button .cancel-icon {
+  font-size: 1rem;
+}
+
+/* Cancel Button - Inline variant (next to submit) */
+.button-row {
+  display: flex;
+  gap: 12px;
+}
+
+.button-row button {
+  flex: 1;
+}
+
+.button-row .cancel-button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+/* Cancelled Message */
+.cancelled-message {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: #fff3e0;
+  border: 1px solid #ffb74d;
+  border-left: 4px solid #ff9800;
+  border-radius: 0 8px 8px 0;
+  color: #e65100;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cancelled-message .cancelled-icon {
+  font-size: 1.2rem;
+}
+
+/* Job Status Badge */
+.job-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.job-status-badge.running {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.job-status-badge.completed {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.job-status-badge.cancelled {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.job-status-badge.failed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* Persistent Job Banner - Shows when returning to page with running job */
+.job-running-banner {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+  border: 1px solid #64b5f6;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.job-running-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.job-running-banner-icon {
+  font-size: 1.3rem;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.job-running-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.job-running-banner-title {
+  font-weight: 600;
+  color: #1565c0;
+  font-size: 0.95rem;
+}
+
+.job-running-banner-detail {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.job-running-banner .cancel-button {
+  padding: 6px 16px;
+  font-size: 0.85rem;
+}
+
+/* Loading state with progress */
+.loading-with-progress {
+  text-align: center;
+}
+
+.loading-with-progress .spinner {
+  width: 24px;
+  height: 24px;
+  margin: 0 auto 12px;
+}
+
+/* Form disabled state during job */
+.form-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .button-row {
+    flex-direction: column;
+  }
+
+  .button-row .cancel-button {
+    width: 100%;
+  }
+
+  .job-running-banner {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .job-running-banner-info {
+    flex-direction: column;
+  }
+}

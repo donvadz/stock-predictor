@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { useState } from 'react'
+import useJob from '../hooks/useJob'
 
 // Format seconds as "X:XX"
 function formatTime(seconds) {
@@ -204,12 +203,21 @@ const STOCK_CATEGORIES = {
 function Screener() {
   const [days, setDays] = useState('5')
   const [minConfidence, setMinConfidence] = useState(75)
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
   const [showStockList, setShowStockList] = useState(false)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const timerRef = useRef(null)
+
+  const {
+    status,
+    progress,
+    progressMessage,
+    result,
+    error,
+    elapsedSeconds,
+    isLoading,
+    isCancelled,
+    startJob,
+    cancelJob,
+    reset,
+  } = useJob('screener')
 
   const daysNum = Number(days)
   const isValidDays = days !== '' && daysNum >= 1 && daysNum <= 30
@@ -217,49 +225,23 @@ function Screener() {
   // Count total stocks
   const totalStocks = Object.values(STOCK_CATEGORIES).flat().length
 
-  // Timer effect
-  useEffect(() => {
-    if (loading) {
-      setElapsedSeconds(0)
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds(s => s + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [loading])
-
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!isValidDays) return
-
-    setLoading(true)
-    setResult(null)
-    setError(null)
+    if (!isValidDays || isLoading) return
 
     try {
-      const response = await fetch(
-        `${API_BASE}/screener?days=${daysNum}&min_confidence=${minConfidence / 100}`
-      )
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Screener failed')
-      }
-
-      const data = await response.json()
-      setResult(data)
+      await startJob('screener', {
+        days: daysNum,
+        min_confidence: minConfidence / 100,
+      })
     } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
+      // Error is handled by useJob hook
+      console.error('Failed to start job:', err)
     }
+  }
+
+  const handleCancel = async () => {
+    await cancelJob()
   }
 
   return (
@@ -277,7 +259,7 @@ function Screener() {
         View all {totalStocks} stocks & ETFs scanned →
       </button>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className={isLoading ? 'form-disabled' : ''}>
         <div className="form-group">
           <label htmlFor="screener-days">Days Ahead (1-30)</label>
           <input
@@ -287,7 +269,7 @@ function Screener() {
             max="30"
             value={days}
             onChange={(e) => setDays(e.target.value)}
-            disabled={loading}
+            disabled={isLoading}
           />
         </div>
 
@@ -301,30 +283,57 @@ function Screener() {
               max="100"
               value={minConfidence}
               onChange={(e) => setMinConfidence(Number(e.target.value))}
-              disabled={loading}
+              disabled={isLoading}
             />
             <span className="slider-value">{minConfidence}%</span>
           </div>
         </div>
 
-        <button type="submit" disabled={loading || !isValidDays}>
-          {loading && <span className="spinner"></span>}
-          {loading ? 'Scanning...' : 'Scan Stocks'}
-        </button>
+        <div className="button-row">
+          <button type="submit" disabled={isLoading || !isValidDays}>
+            {isLoading && <span className="spinner"></span>}
+            {isLoading ? 'Scanning...' : 'Scan Stocks'}
+          </button>
+          {isLoading && (
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={handleCancel}
+            >
+              <span className="cancel-icon">✕</span>
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
-      {loading && (
-        <div className="loading-text">
-          <p>Scanning {totalStocks} stocks & ETFs...</p>
-          <p className="loading-timer">
-            ⏱ Elapsed: {formatTime(elapsedSeconds)}
-            {' '} • {' '}
-            Est. remaining: ~{formatTime(Math.max(0, 90 - elapsedSeconds))}
-          </p>
+      {isLoading && (
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{progressMessage || `Scanning ${totalStocks} stocks...`}</span>
+            <span className="job-progress-percent">{progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <div className="job-timer">
+            <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+            <span>Est. remaining: ~{formatTime(Math.max(0, Math.round((90 - elapsedSeconds) * (100 - progress) / Math.max(progress, 1))))}</span>
+          </div>
         </div>
       )}
 
-      {error && (
+      {isCancelled && (
+        <div className="cancelled-message">
+          <span className="cancelled-icon">⚠️</span>
+          <span>Scan was cancelled. Click "Scan Stocks" to start a new scan.</span>
+        </div>
+      )}
+
+      {error && !isCancelled && (
         <div className="error">{error}</div>
       )}
 

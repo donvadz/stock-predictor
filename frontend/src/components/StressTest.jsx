@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { useState } from 'react'
+import useJob from '../hooks/useJob'
 
 function formatTime(seconds) {
   const mins = Math.floor(seconds / 60)
@@ -16,47 +15,29 @@ const CRISIS_PERIODS = {
 }
 
 function StressTest() {
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const timerRef = useRef(null)
-
-  useEffect(() => {
-    if (loading) {
-      setElapsedSeconds(0)
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds(s => s + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [loading])
+  const {
+    status,
+    progress,
+    progressMessage,
+    result,
+    error,
+    elapsedSeconds,
+    isLoading,
+    isCancelled,
+    startJob,
+    cancelJob,
+  } = useJob('stress-test')
 
   const runStressTest = async () => {
-    setLoading(true)
-    setResult(null)
-    setError(null)
-
     try {
-      const response = await fetch(`${API_BASE}/stress-test`)
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Stress test failed')
-      }
-      const data = await response.json()
-      setResult(data)
+      await startJob('stress-test', {})
     } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
+      console.error('Failed to start stress test:', err)
     }
+  }
+
+  const handleCancel = async () => {
+    await cancelJob()
   }
 
   const getAccuracyClass = (accuracy) => {
@@ -74,22 +55,50 @@ function StressTest() {
         <strong>This is why we check market regime before trading.</strong>
       </p>
 
-      <button onClick={runStressTest} disabled={loading}>
-        {loading && <span className="spinner"></span>}
-        {loading ? 'Running Tests...' : 'Run Stress Tests'}
-      </button>
+      <div className="button-row">
+        <button onClick={runStressTest} disabled={isLoading}>
+          {isLoading && <span className="spinner"></span>}
+          {isLoading ? 'Running Tests...' : 'Run Stress Tests'}
+        </button>
+        {isLoading && (
+          <button
+            type="button"
+            className="cancel-button"
+            onClick={handleCancel}
+          >
+            <span className="cancel-icon">✕</span>
+            Cancel
+          </button>
+        )}
+      </div>
 
-      {loading && (
-        <div className="loading-text">
-          <p>Testing against 4 crisis periods...</p>
-          <p className="loading-timer">
-            Elapsed: {formatTime(elapsedSeconds)}
-          </p>
+      {isLoading && (
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{progressMessage || 'Testing against 4 crisis periods...'}</span>
+            <span className="job-progress-percent">{progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <div className="job-timer">
+            <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+          </div>
           <p className="loading-note">This may take 2-4 minutes</p>
         </div>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {isCancelled && (
+        <div className="cancelled-message">
+          <span className="cancelled-icon">⚠️</span>
+          <span>Stress test was cancelled. Click "Run Stress Tests" to start again.</span>
+        </div>
+      )}
+
+      {error && !isCancelled && <div className="error">{error}</div>}
 
       {result && (
         <div className="stress-results">

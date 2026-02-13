@@ -1,39 +1,45 @@
 import { useState } from 'react'
+import useJob from '../hooks/useJob'
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
 
 function Backtest() {
   const [ticker, setTicker] = useState('AAPL')
   const [days, setDays] = useState('5')
-  const [testPeriods, setTestPeriods] = useState('50')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
+
+  const {
+    status,
+    progress,
+    progressMessage,
+    result,
+    error,
+    elapsedSeconds,
+    isLoading,
+    isCancelled,
+    startJob,
+    cancelJob,
+  } = useJob('backtest')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-
-    setLoading(true)
-    setResult(null)
-    setError(null)
+    if (isLoading || !ticker.trim()) return
 
     try {
-      const response = await fetch(
-        `${API_BASE}/backtest?ticker=${encodeURIComponent(ticker)}&days=${days}&test_periods=${testPeriods}`
-      )
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Backtest failed')
-      }
-
-      const data = await response.json()
-      setResult(data)
+      await startJob('backtest', {
+        ticker: ticker.toUpperCase(),
+        days: Number(days),
+      })
     } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
+      console.error('Failed to start backtest:', err)
     }
+  }
+
+  const handleCancel = async () => {
+    await cancelJob()
   }
 
   const getAccuracyColor = (accuracy) => {
@@ -51,7 +57,7 @@ function Backtest() {
         The model makes predictions at past dates and compares to actual outcomes.
       </p>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className={isLoading ? 'form-disabled' : ''}>
         <div className="form-row">
           <div className="form-group">
             <label htmlFor="backtest-ticker">Ticker</label>
@@ -61,7 +67,7 @@ function Backtest() {
               value={ticker}
               onChange={(e) => setTicker(e.target.value.toUpperCase())}
               placeholder="AAPL"
-              disabled={loading}
+              disabled={isLoading}
             />
           </div>
 
@@ -74,37 +80,55 @@ function Backtest() {
               max="30"
               value={days}
               onChange={(e) => setDays(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="backtest-periods">Test Periods</label>
-            <input
-              id="backtest-periods"
-              type="number"
-              min="20"
-              max="200"
-              value={testPeriods}
-              onChange={(e) => setTestPeriods(e.target.value)}
-              disabled={loading}
+              disabled={isLoading}
             />
           </div>
         </div>
 
-        <button type="submit" disabled={loading || !ticker.trim()}>
-          {loading && <span className="spinner"></span>}
-          {loading ? 'Running Backtest...' : 'Run Backtest'}
-        </button>
+        <div className="button-row">
+          <button type="submit" disabled={isLoading || !ticker.trim()}>
+            {isLoading && <span className="spinner"></span>}
+            {isLoading ? 'Running Backtest...' : 'Run Backtest'}
+          </button>
+          {isLoading && (
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={handleCancel}
+            >
+              <span className="cancel-icon">✕</span>
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
-      {loading && (
-        <p className="loading-text">
-          Testing {testPeriods} predictions on {ticker}... This may take a minute.
-        </p>
+      {isLoading && (
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{progressMessage || `Running backtest on ${ticker}...`}</span>
+            <span className="job-progress-percent">{progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <div className="job-timer">
+            <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+          </div>
+        </div>
       )}
 
-      {error && (
+      {isCancelled && (
+        <div className="cancelled-message">
+          <span className="cancelled-icon">⚠️</span>
+          <span>Backtest was cancelled. Click "Run Backtest" to start again.</span>
+        </div>
+      )}
+
+      {error && !isCancelled && (
         <div className="error">{error}</div>
       )}
 

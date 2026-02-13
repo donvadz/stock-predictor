@@ -1,13 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
-// Estimate backtest time in seconds based on test periods
-function getEstimatedSeconds(periods) {
-  const p = Number(periods) || 30
-  // Roughly 7.5 seconds per period for 61 stocks (measured: 10 periods = 75 sec)
-  return Math.round(p * 7.5)
-}
+import { useState } from 'react'
+import useJob from '../hooks/useJob'
 
 // Format seconds as "X:XX"
 function formatTime(seconds) {
@@ -19,70 +11,36 @@ function formatTime(seconds) {
 function ScreenerBacktest() {
   const [days, setDays] = useState('5')
   const [minConfidence, setMinConfidence] = useState('75')
-  const [testPeriods, setTestPeriods] = useState('30')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const timerRef = useRef(null)
 
-  // Timer effect
-  useEffect(() => {
-    if (loading) {
-      setElapsedSeconds(0)
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds(s => s + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [loading])
+  const {
+    status,
+    progress,
+    progressMessage,
+    result,
+    error,
+    elapsedSeconds,
+    isLoading,
+    isCancelled,
+    startJob,
+    cancelJob,
+  } = useJob('screener-backtest')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-
-    setLoading(true)
-    setResult(null)
-    setError(null)
-
-    // Create abort controller with 10 minute timeout for long backtests
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 600000) // 10 minutes
+    if (isLoading) return
 
     try {
-      const confidence = Number(minConfidence) / 100
-      const response = await fetch(
-        `${API_BASE}/screener-backtest?days=${days}&min_confidence=${confidence}&test_periods=${testPeriods}`,
-        { signal: controller.signal }
-      )
-
-      clearTimeout(timeoutId)
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Backtest failed')
-      }
-
-      const data = await response.json()
-      setResult(data)
+      await startJob('screener-backtest', {
+        days: Number(days),
+        min_confidence: Number(minConfidence) / 100,
+      })
     } catch (err) {
-      clearTimeout(timeoutId)
-      if (err.name === 'AbortError') {
-        setError('Request timed out after 10 minutes. Try fewer test periods.')
-      } else if (err.message === 'Failed to fetch') {
-        setError('Connection lost. Check your network and try again. Long backtests may timeout on slow connections.')
-      } else {
-        setError(err.message)
-      }
-    } finally {
-      setLoading(false)
+      console.error('Failed to start screener backtest:', err)
     }
+  }
+
+  const handleCancel = async () => {
+    await cancelJob()
   }
 
   const getWinRateColor = (rate) => {
@@ -105,7 +63,7 @@ function ScreenerBacktest() {
         regime analysis, and market-relative validation. Uses non-overlapping periods and long-only trades.
       </p>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className={isLoading ? 'form-disabled' : ''}>
         <div className="form-row">
           <div className="form-group">
             <label htmlFor="screener-days">Days Ahead</label>
@@ -116,7 +74,7 @@ function ScreenerBacktest() {
               max="30"
               value={days}
               onChange={(e) => setDays(e.target.value)}
-              disabled={loading}
+              disabled={isLoading}
             />
           </div>
 
@@ -129,45 +87,58 @@ function ScreenerBacktest() {
               max="95"
               value={minConfidence}
               onChange={(e) => setMinConfidence(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="screener-periods">Test Periods</label>
-            <input
-              id="screener-periods"
-              type="number"
-              min="10"
-              max="100"
-              value={testPeriods}
-              onChange={(e) => setTestPeriods(e.target.value)}
-              disabled={loading}
+              disabled={isLoading}
             />
           </div>
         </div>
 
-        <button type="submit" disabled={loading}>
-          {loading && <span className="spinner"></span>}
-          {loading ? 'Running Backtest...' : 'Run Screener Backtest'}
-        </button>
+        <div className="button-row">
+          <button type="submit" disabled={isLoading}>
+            {isLoading && <span className="spinner"></span>}
+            {isLoading ? 'Running Backtest...' : 'Run Screener Backtest'}
+          </button>
+          {isLoading && (
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={handleCancel}
+            >
+              <span className="cancel-icon">✕</span>
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
-      {loading && (
-        <div className="loading-text">
-          <p>Testing screener on ~61 stocks over {testPeriods} non-overlapping periods...</p>
-          <p className="loading-timer">
-            ⏱ Elapsed: {formatTime(elapsedSeconds)}
-            {' '} • {' '}
-            Est. remaining: ~{formatTime(Math.max(0, getEstimatedSeconds(testPeriods) - elapsedSeconds))}
-          </p>
+      {isLoading && (
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{progressMessage || 'Testing screener on ~61 stocks...'}</span>
+            <span className="job-progress-percent">{progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <div className="job-timer">
+            <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+          </div>
           <p className="loading-note">
-            Tip: After running once, requests with fewer periods load instantly from cache.
+            Tip: After running once, requests load instantly from cache.
           </p>
         </div>
       )}
 
-      {error && (
+      {isCancelled && (
+        <div className="cancelled-message">
+          <span className="cancelled-icon">⚠️</span>
+          <span>Backtest was cancelled. Click "Run Screener Backtest" to start again.</span>
+        </div>
+      )}
+
+      {error && !isCancelled && (
         <div className="error">{error}</div>
       )}
 
@@ -178,7 +149,7 @@ function ScreenerBacktest() {
             {result._cached && <span className="cache-badge">From Cache</span>}
           </h3>
           <p className="backtest-subtitle">
-            {result.summary.stocks_tested} stocks tested, {result.summary.total_picks} screener picks over {result.test_periods} periods
+            {result.summary.stocks_tested} stocks tested, {result.summary.total_picks} screener picks
           </p>
 
           {/* Summary Metrics */}

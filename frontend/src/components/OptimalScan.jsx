@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { useState } from 'react'
+import useJob from '../hooks/useJob'
 
 function formatTime(seconds) {
   const mins = Math.floor(seconds / 60)
@@ -10,102 +9,41 @@ function formatTime(seconds) {
 
 function OptimalScan() {
   const [days, setDays] = useState(20)
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [showTierInfo, setShowTierInfo] = useState(false)
-  const timerRef = useRef(null)
-
-  // Backtest state
-  const [backtestLoading, setBacktestLoading] = useState(false)
-  const [backtestResult, setBacktestResult] = useState(null)
-  const [backtestError, setBacktestError] = useState(null)
-  const [backtestElapsed, setBacktestElapsed] = useState(0)
   const [showBacktest, setShowBacktest] = useState(false)
-  const backtestTimerRef = useRef(null)
 
-  useEffect(() => {
-    if (loading) {
-      setElapsedSeconds(0)
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds(s => s + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [loading])
+  // Scan job
+  const scanJob = useJob('optimal-scan')
 
-  // Backtest timer effect
-  useEffect(() => {
-    if (backtestLoading) {
-      setBacktestElapsed(0)
-      backtestTimerRef.current = setInterval(() => {
-        setBacktestElapsed(s => s + 1)
-      }, 1000)
-    } else {
-      if (backtestTimerRef.current) {
-        clearInterval(backtestTimerRef.current)
-        backtestTimerRef.current = null
-      }
-    }
-    return () => {
-      if (backtestTimerRef.current) clearInterval(backtestTimerRef.current)
-    }
-  }, [backtestLoading])
+  // Backtest job
+  const backtestJob = useJob('optimal-backtest')
 
   const handleScan = async () => {
-    setLoading(true)
-    setResult(null)
-    setError(null)
-
     try {
-      const response = await fetch(`${API_BASE}/optimal-scan?days=${days}`)
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Scan failed')
-      }
-      const data = await response.json()
-      setResult(data)
+      await scanJob.startJob('optimal-scan', { days })
     } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
+      console.error('Failed to start scan:', err)
     }
   }
 
   const handleBacktest = async () => {
-    setBacktestLoading(true)
-    setBacktestResult(null)
-    setBacktestError(null)
-
     try {
-      const response = await fetch(
-        `${API_BASE}/optimal-backtest?days=${days}&min_signals=4&tier1_only=false`
-      )
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Backtest failed')
-      }
-      const data = await response.json()
-      setBacktestResult(data)
+      await backtestJob.startJob('optimal-backtest', {
+        days,
+        min_signals: 4,
+        tier1_only: false,
+      })
     } catch (err) {
-      setBacktestError(err.message)
-    } finally {
-      setBacktestLoading(false)
+      console.error('Failed to start backtest:', err)
     }
   }
+
+  const result = scanJob.result
+  const backtestResult = backtestJob.result
 
   const tier1Signals = result?.tier1_high_conviction || []
   const tier2Signals = result?.tier2_high_conviction || []
   const ultraConviction = result?.ultra_conviction || []
-  const tierInfo = result?.tier_info || {}
 
   return (
     <div className="card optimal-scan-card">
@@ -180,7 +118,7 @@ function OptimalScan() {
             max="30"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
-            disabled={loading}
+            disabled={scanJob.isLoading}
           />
           <span className="slider-value">{days} days</span>
         </div>
@@ -194,21 +132,49 @@ function OptimalScan() {
         </span>
       </div>
 
-      <button onClick={handleScan} disabled={loading}>
-        {loading && <span className="spinner"></span>}
-        {loading ? 'Scanning...' : 'Scan for Signals'}
-      </button>
+      <div className="button-row">
+        <button onClick={handleScan} disabled={scanJob.isLoading}>
+          {scanJob.isLoading && <span className="spinner"></span>}
+          {scanJob.isLoading ? 'Scanning...' : 'Scan for Signals'}
+        </button>
+        {scanJob.isLoading && (
+          <button
+            type="button"
+            className="cancel-button"
+            onClick={() => scanJob.cancelJob()}
+          >
+            <span className="cancel-icon">✕</span>
+            Cancel
+          </button>
+        )}
+      </div>
 
-      {loading && (
-        <div className="loading-text">
-          <p>Analyzing {result?.optimal_stocks?.length || 96} optimal stocks...</p>
-          <p className="loading-timer">
-            Elapsed: {formatTime(elapsedSeconds)}
-          </p>
+      {scanJob.isLoading && (
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{scanJob.progressMessage || 'Analyzing optimal stocks...'}</span>
+            <span className="job-progress-percent">{scanJob.progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${scanJob.progress}%` }}
+            ></div>
+          </div>
+          <div className="job-timer">
+            <span>Elapsed: {formatTime(scanJob.elapsedSeconds)}</span>
+          </div>
         </div>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {scanJob.isCancelled && (
+        <div className="cancelled-message">
+          <span className="cancelled-icon">⚠️</span>
+          <span>Scan was cancelled. Click "Scan for Signals" to start again.</span>
+        </div>
+      )}
+
+      {scanJob.error && !scanJob.isCancelled && <div className="error">{scanJob.error}</div>}
 
       {result && (
         <div className="optimal-results">
@@ -388,24 +354,54 @@ function OptimalScan() {
               </span>
             </div>
 
-            <button
-              className="run-backtest-btn"
-              onClick={handleBacktest}
-              disabled={backtestLoading}
-            >
-              {backtestLoading && <span className="spinner"></span>}
-              {backtestLoading ? 'Running Backtest...' : `Run ${days}-Day Backtest`}
-            </button>
+            <div className="button-row">
+              <button
+                className="run-backtest-btn"
+                onClick={handleBacktest}
+                disabled={backtestJob.isLoading}
+              >
+                {backtestJob.isLoading && <span className="spinner"></span>}
+                {backtestJob.isLoading ? 'Running Backtest...' : `Run ${days}-Day Backtest`}
+              </button>
+              {backtestJob.isLoading && (
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={() => backtestJob.cancelJob()}
+                >
+                  <span className="cancel-icon">✕</span>
+                  Cancel
+                </button>
+              )}
+            </div>
 
-            {backtestLoading && (
-              <div className="loading-text">
-                <p>Testing {days}-day predictions on horizon-optimized stocks...</p>
-                <p className="loading-timer">Elapsed: {formatTime(backtestElapsed)}</p>
+            {backtestJob.isLoading && (
+              <div className="job-progress-container">
+                <div className="job-progress-header">
+                  <span className="job-progress-text">{backtestJob.progressMessage || 'Testing predictions on optimized stocks...'}</span>
+                  <span className="job-progress-percent">{backtestJob.progress}%</span>
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className="progress-bar-fill"
+                    style={{ width: `${backtestJob.progress}%` }}
+                  ></div>
+                </div>
+                <div className="job-timer">
+                  <span>Elapsed: {formatTime(backtestJob.elapsedSeconds)}</span>
+                </div>
                 <p className="loading-hint">This takes 2-4 minutes</p>
               </div>
             )}
 
-            {backtestError && <div className="error">{backtestError}</div>}
+            {backtestJob.isCancelled && (
+              <div className="cancelled-message">
+                <span className="cancelled-icon">⚠️</span>
+                <span>Backtest was cancelled. Click the button above to start again.</span>
+              </div>
+            )}
+
+            {backtestJob.error && !backtestJob.isCancelled && <div className="error">{backtestJob.error}</div>}
 
             {backtestResult && (
               <div className="backtest-results">
