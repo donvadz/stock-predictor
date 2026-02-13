@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import useJob from '../hooks/useJob'
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function formatTime(seconds) {
   const mins = Math.floor(seconds / 60)
@@ -11,12 +13,29 @@ function OptimalScan() {
   const [days, setDays] = useState(20)
   const [showTierInfo, setShowTierInfo] = useState(false)
   const [showBacktest, setShowBacktest] = useState(false)
+  const [tierInfo, setTierInfo] = useState(null)
 
   // Scan job
   const scanJob = useJob('optimal-scan')
 
   // Backtest job
   const backtestJob = useJob('optimal-backtest')
+
+  // Fetch tier info when days changes
+  useEffect(() => {
+    const fetchTierInfo = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/tier-info?days=${days}`)
+        if (response.ok) {
+          const data = await response.json()
+          setTierInfo(data)
+        }
+      } catch (err) {
+        console.error('Failed to fetch tier info:', err)
+      }
+    }
+    fetchTierInfo()
+  }, [days])
 
   const handleScan = async () => {
     try {
@@ -68,22 +87,22 @@ function OptimalScan() {
 
         {showTierInfo && (
           <div className="tier-info-panel">
-            {result?.horizon_info && (
+            {tierInfo && (
               <div className="horizon-info-banner">
-                <strong>Horizon:</strong> Using stocks optimized for {result.horizon_tier_used}-day horizon
-                ({result.horizon_info.total_stocks} stocks total)
+                <strong>Horizon:</strong> Using stocks optimized for {tierInfo.horizon_tier_used}-day horizon
+                ({tierInfo.total_stocks} stocks total)
               </div>
             )}
             <div className="tier-box tier1-box">
               <div className="tier-header">
                 <span className="tier-badge tier1">Tier 1</span>
                 <span className="tier-accuracy">75%+ accuracy</span>
-                {result?.horizon_info && (
-                  <span className="tier-count">({result.horizon_info.tier1_count} stocks)</span>
+                {tierInfo && (
+                  <span className="tier-count">({tierInfo.tier1_count} stocks)</span>
                 )}
               </div>
               <div className="tier-stocks-list">
-                {result?.tier1_stocks?.join(', ') || result?.tier_info?.tier1?.stocks?.join(', ') || 'Loading...'}
+                {tierInfo?.tier1_stocks?.join(', ') || 'Loading...'}
               </div>
               <div className="tier-action">
                 <strong>Action:</strong> Full position size, highest confidence
@@ -93,12 +112,12 @@ function OptimalScan() {
               <div className="tier-header">
                 <span className="tier-badge tier2">Tier 2</span>
                 <span className="tier-accuracy">60-74% accuracy</span>
-                {result?.horizon_info && (
-                  <span className="tier-count">({result.horizon_info.tier2_count} stocks)</span>
+                {tierInfo && (
+                  <span className="tier-count">({tierInfo.tier2_count} stocks)</span>
                 )}
               </div>
               <div className="tier-stocks-list">
-                {result?.tier2_stocks?.join(', ') || result?.tier_info?.tier2?.stocks?.join(', ') || 'Loading...'}
+                {tierInfo?.tier2_stocks?.join(', ') || 'Loading...'}
               </div>
               <div className="tier-action">
                 <strong>Action:</strong> Half position or wait for 5/5 signals
@@ -152,7 +171,7 @@ function OptimalScan() {
       {scanJob.isLoading && (
         <div className="job-progress-container">
           <div className="job-progress-header">
-            <span className="job-progress-text">{scanJob.progressMessage || 'Analyzing optimal stocks...'}</span>
+            <span className="job-progress-text">{scanJob.progressMessage || `Analyzing ${tierInfo?.total_stocks || 96} optimal stocks...`}</span>
             <span className="job-progress-percent">{scanJob.progress}%</span>
           </div>
           <div className="progress-bar">
@@ -346,11 +365,7 @@ function OptimalScan() {
             <div className="backtest-horizon-info">
               <strong>Testing {days}-day horizon</strong>
               <span className="horizon-stocks-hint">
-                {days <= 2 && ' → Using 11 stocks optimized for 2-day'}
-                {days === 3 && ' → Using 22 stocks optimized for 3-day'}
-                {days === 4 && ' → Using 28 stocks optimized for 4-day'}
-                {days === 5 && ' → Using 23 stocks optimized for 5-day'}
-                {days > 5 && ' → Using 96 stocks optimized for 20-day'}
+                {tierInfo && ` → Using ${tierInfo.total_stocks} stocks optimized for ${tierInfo.horizon_tier_used}-day`}
               </span>
             </div>
 

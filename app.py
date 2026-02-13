@@ -656,6 +656,38 @@ def about():
     }
 
 
+@app.get("/tier-info")
+def get_tier_info(
+    days: int = Query(20, ge=2, le=30, description="Days ahead (2-5 for short-term, 20 for optimal)"),
+):
+    """
+    Get the tier 1 and tier 2 stock lists for a given horizon.
+    This is a fast endpoint that returns static data.
+    """
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+
+    if days <= 2:
+        horizon_used = 2
+    elif days == 3:
+        horizon_used = 3
+    elif days == 4:
+        horizon_used = 4
+    elif days == 5:
+        horizon_used = 5
+    else:
+        horizon_used = 20
+
+    return {
+        "horizon_days": days,
+        "horizon_tier_used": horizon_used,
+        "tier1_stocks": tier1_stocks,
+        "tier2_stocks": tier2_stocks,
+        "tier1_count": len(tier1_stocks),
+        "tier2_count": len(tier2_stocks),
+        "total_stocks": len(tier1_stocks) + len(tier2_stocks),
+    }
+
+
 @app.get("/optimal-scan")
 def optimal_scan(
     days: int = Query(20, ge=2, le=30, description="Days ahead (2-5 for short-term, 20 for optimal)"),
