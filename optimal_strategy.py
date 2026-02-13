@@ -73,8 +73,95 @@ TIER2_STOCKS = [
     "INTU", "JBHT", "PNR", "BKR", "PKG", "AME", "SYY",
 ]
 
-# All optimal stocks
+# All optimal stocks (20-day horizon)
 OPTIMAL_STOCKS = TIER1_STOCKS + TIER2_STOCKS
+
+# =============================================================================
+# HORIZON-SPECIFIC TIERS (2, 3, 4, 5 days)
+# Screened using find_tier1_candidates.py with --days N
+# =============================================================================
+
+HORIZON_TIERS = {
+    2: {
+        # 2-day horizon - screened for short-term patterns
+        "tier1": [
+            # 75%+ high-confidence accuracy on 2-day
+            "RSG", "VIG", "EQR", "EQIX", "EXC", "KO", "PFE", "MDLZ", "HON",
+        ],
+        "tier2": [
+            # 60-74% high-confidence accuracy on 2-day
+            "XEL", "ES",
+        ],
+    },
+    3: {
+        # 3-day horizon
+        "tier1": [
+            # 75%+ high-confidence accuracy on 3-day
+            "IVV", "SRE", "MS", "AMT", "CME", "SO", "PSA", "ISRG", "NSC",
+            "EXC", "PG", "UNH", "MDLZ",
+        ],
+        "tier2": [
+            # 60-74% high-confidence accuracy on 3-day
+            "TXN", "K", "HON", "ZTS", "XLU", "ABBV", "ES", "PEP", "NEE",
+        ],
+    },
+    4: {
+        # 4-day horizon
+        "tier1": [
+            # 75%+ high-confidence accuracy on 4-day
+            "SRE", "EQR", "KHC", "CRM", "GS", "VTI", "TXN", "SYK", "CME",
+            "EMR", "NI", "V", "ISRG", "IVV", "ICE", "MDLZ", "VYM", "HON",
+            "ACN", "EQIX", "WEC", "AVB", "IBM",
+        ],
+        "tier2": [
+            # 60-74% high-confidence accuracy on 4-day
+            "AZO", "DUK", "PSA", "LOW", "XEL",
+        ],
+    },
+    5: {
+        # 5-day horizon
+        "tier1": [
+            # 75%+ high-confidence accuracy on 5-day
+            "HD", "NI", "AVGO", "PEG", "PM", "V", "MMM", "TXN", "EQIX",
+            "VIG", "DHI", "VYM", "AZO",
+        ],
+        "tier2": [
+            # 60-74% high-confidence accuracy on 5-day
+            "CSX", "VTI", "DE", "PEP", "BMY", "GS", "SO", "XEL", "PSA", "ACN",
+        ],
+    },
+    20: {
+        # 20-day horizon (original optimal stocks)
+        "tier1": TIER1_STOCKS,
+        "tier2": TIER2_STOCKS,
+    },
+}
+
+
+def get_stocks_for_horizon(days: int) -> tuple:
+    """
+    Return (tier1, tier2) stocks optimized for the given horizon.
+
+    Maps to nearest supported horizon:
+    - days <= 2: use 2-day tiers
+    - days == 3: use 3-day tiers
+    - days == 4: use 4-day tiers
+    - days == 5: use 5-day tiers
+    - days > 5: use 20-day tiers
+    """
+    if days <= 2:
+        horizon = 2
+    elif days == 3:
+        horizon = 3
+    elif days == 4:
+        horizon = 4
+    elif days == 5:
+        horizon = 5
+    else:
+        horizon = 20  # Default to 20-day tiers for longer horizons
+
+    tiers = HORIZON_TIERS.get(horizon, HORIZON_TIERS[20])
+    return tiers["tier1"], tiers["tier2"]
 
 # Top features from importance analysis
 TOP_FEATURES = [
@@ -144,7 +231,9 @@ def run_optimal_backtest(
 ) -> Dict:
     """Run backtest with optimal settings."""
     if stocks is None:
-        stocks = TIER1_STOCKS if tier1_only else OPTIMAL_STOCKS
+        # Get horizon-specific stocks
+        tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+        stocks = tier1_stocks if tier1_only else (tier1_stocks + tier2_stocks)
 
     if verbose:
         print("=" * 70)
@@ -294,16 +383,21 @@ def run_production_scan(days: int = 20, verbose: bool = True) -> Dict:
     Run a production scan for current high-conviction signals.
     This would be used for live trading decisions.
     """
+    # Get horizon-specific stocks
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+    optimal_stocks = tier1_stocks + tier2_stocks
+
     if verbose:
         print("\n" + "=" * 70)
         print("PRODUCTION SCAN - CURRENT SIGNALS")
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print(f"Horizon: {days} days")
+        print(f"Using {len(optimal_stocks)} stocks optimized for {days}-day horizon")
         print("=" * 70)
 
     signals_found = []
 
-    for ticker in OPTIMAL_STOCKS:
+    for ticker in optimal_stocks:
         if verbose:
             print(f"\nScanning {ticker}...")
 
@@ -355,8 +449,8 @@ def run_production_scan(days: int = 20, verbose: bool = True) -> Dict:
 
         current_price = df["close"].iloc[-1]
 
-        # Determine tier
-        tier = 1 if ticker in TIER1_STOCKS else 2
+        # Determine tier (using horizon-specific tier lists)
+        tier = 1 if ticker in tier1_stocks else 2
 
         # For high conviction, require that ml_bullish is ONE of the aligned signals
         # This ensures ML confidence >= 70% (not just predicting UP with low confidence)
@@ -428,15 +522,15 @@ def run_production_scan(days: int = 20, verbose: bool = True) -> Dict:
         "tier2_high_conviction": tier2_signals,
         "tier_info": {
             "tier1": {
-                "stocks": TIER1_STOCKS,
-                "accuracy": "80%",
-                "description": "Highest accuracy - verified best performers",
+                "stocks": tier1_stocks,
+                "accuracy": "75%+",
+                "description": f"Highest accuracy - optimized for {days}-day horizon",
                 "action": "Full position size, highest confidence trades",
             },
             "tier2": {
-                "stocks": TIER2_STOCKS,
-                "accuracy": "65-75%",
-                "description": "Good performers - slightly lower accuracy",
+                "stocks": tier2_stocks,
+                "accuracy": "60-74%",
+                "description": f"Good performers - optimized for {days}-day horizon",
                 "action": "Consider half position size or wait for 5/5 signals",
             },
         },

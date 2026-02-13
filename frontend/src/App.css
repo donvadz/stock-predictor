@@ -1613,9 +1613,30 @@ footer {
   }
 }
 
+.horizon-info-banner {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+  padding: 10px 14px;
+  border-radius: 8px;
+  text-align: center;
+  border: 1px solid #ffb74d;
+  font-size: 0.9rem;
+}
+
+.horizon-info-banner strong {
+  color: #e65100;
+}
+
 .tier-box {
   padding: 16px;
   border-radius: 10px;
+}
+
+.tier-count {
+  font-size: 0.8rem;
+  color: #666;
+  font-weight: normal;
+  margin-left: 8px;
 }
 
 .tier1-box {
@@ -2076,6 +2097,42 @@ footer {
   font-size: 0.85rem;
   color: #666;
   margin-bottom: 16px;
+}
+
+.backtest-horizon-info {
+  background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  border-left: 4px solid #1976d2;
+}
+
+.backtest-horizon-info strong {
+  color: #1565c0;
+}
+
+.horizon-stocks-hint {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.backtest-horizon-banner {
+  background: linear-gradient(135deg, #e8f5e9 0%, #e3f2fd 100%);
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+  border-left: 4px solid #4caf50;
+}
+
+.backtest-horizon-banner strong {
+  color: #2e7d32;
+}
+
+.backtest-horizon-banner .stock-counts {
+  color: #666;
+  font-size: 0.85rem;
+  margin-left: 8px;
 }
 
 .run-backtest-btn {

@@ -28,7 +28,11 @@ from backtest_realistic import (
 )
 from validation import run_year_split_backtest, analyze_feature_importance
 from regime_aware import get_current_regime, detect_regime
-from optimal_strategy import run_optimal_backtest, run_production_scan, TIER1_STOCKS, OPTIMAL_STOCKS
+from optimal_strategy import (
+    run_optimal_backtest,
+    run_production_scan,
+    get_stocks_for_horizon,
+)
 from stress_test import run_all_stress_tests, run_crisis_backtest
 
 app = FastAPI(title="Stock Direction Predictor")
@@ -651,21 +655,23 @@ def about():
 
 @app.get("/optimal-scan")
 def optimal_scan(
-    days: int = Query(20, ge=5, le=30, description="Days ahead (20 recommended)"),
+    days: int = Query(20, ge=2, le=30, description="Days ahead (2-5 for short-term, 20 for optimal)"),
 ):
     """
     Run production scan for high-conviction trading signals.
 
-    This is the BEST strategy we have, combining:
-    - Multi-signal consensus (ML + trend + volatility + momentum + RSI)
-    - Optimal 20-day horizon
-    - Tier 1 stocks (MCD, QQQ, MSFT, MA, COST, SPY)
+    This strategy uses horizon-specific optimized stock lists:
+    - 2-day: 11 stocks optimized for very short-term
+    - 3-day: 22 stocks optimized for short-term
+    - 4-day: 28 stocks optimized for short-term
+    - 5-day: 23 stocks optimized for short-term
+    - 6-30 days: Uses 20-day optimized list (99 stocks)
 
     Returns actionable signals when 4+ of 5 signals align bullish.
 
     IMPORTANT CAVEATS:
     - Check /regime first - only trade when regime is NORMAL
-    - 78% accuracy was measured on 2023-2024 bull market
+    - Accuracy varies by horizon and was measured on 2023-2024
     - High-conviction signals occur 1-2 times per month
     - This strategy FAILS during crisis periods
     """
@@ -676,6 +682,10 @@ def optimal_scan(
 
     # Check regime first
     regime = get_current_regime(verbose=False)
+
+    # Get horizon-specific stocks
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+    optimal_stocks = tier1_stocks + tier2_stocks
 
     result = run_production_scan(days=days, verbose=False)
 
@@ -690,11 +700,26 @@ def optimal_scan(
 
     result["current_regime"] = regime
 
+    # Determine which horizon tier is being used
+    if days <= 2:
+        horizon_used = 2
+    elif days == 3:
+        horizon_used = 3
+    elif days == 4:
+        horizon_used = 4
+    elif days == 5:
+        horizon_used = 5
+    else:
+        horizon_used = 20
+
     response = {
         "scan_type": "optimal_strategy",
         "horizon_days": days,
-        "tier1_stocks": TIER1_STOCKS,
-        "optimal_stocks": OPTIMAL_STOCKS,
+        "horizon_tier_used": horizon_used,
+        "tier1_stocks": tier1_stocks,
+        "tier2_stocks": tier2_stocks,
+        "optimal_stocks": optimal_stocks,
+        "available_horizons": [2, 3, 4, 5, 20],
         **result,
         "methodology": {
             "signals": [
@@ -707,11 +732,11 @@ def optimal_scan(
             "threshold": "4 or more signals must align for high conviction",
             "ultra_conviction": "All 5 signals aligned",
         },
-        "backtested_accuracy": {
-            "high_conviction_4_signals": "78.95%",
-            "ultra_conviction_5_signals": "88.89%",
-            "test_period": "2023-2024",
-            "warning": "Past performance does not guarantee future results",
+        "horizon_info": {
+            "description": f"Using stocks optimized for {horizon_used}-day horizon",
+            "tier1_count": len(tier1_stocks),
+            "tier2_count": len(tier2_stocks),
+            "total_stocks": len(optimal_stocks),
         },
     }
 
@@ -788,7 +813,7 @@ def stress_test(
 
 @app.get("/optimal-backtest")
 def optimal_backtest(
-    days: int = Query(20, ge=5, le=30, description="Days ahead (20 recommended)"),
+    days: int = Query(20, ge=2, le=30, description="Days ahead (2-5 for short-term, 20 for optimal)"),
     min_signals: int = Query(4, ge=3, le=5, description="Minimum signals required (4 recommended)"),
     tier1_only: bool = Query(True, description="Use Tier 1 stocks only (recommended)"),
 ):
@@ -796,15 +821,32 @@ def optimal_backtest(
     Backtest the optimal strategy with realistic methodology.
 
     This shows what accuracy we achieved on the test period (2023-2024)
-    using the optimal configuration.
+    using horizon-specific optimized stock lists.
 
-    Tier 1 stocks: MCD, QQQ, MSFT, MA, COST, SPY
-    Tier 2 stocks: V, AAPL, PEP, JPM, PG, HD
+    Stocks are automatically selected based on the horizon:
+    - 2-5 days: Uses short-term optimized stocks
+    - 6-30 days: Uses 20-day optimized stocks
     """
     cache_key = f"optimal-backtest:{days}:{min_signals}:{tier1_only}"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # Get horizon-specific stocks
+    tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
+    stocks_tested = tier1_stocks if tier1_only else (tier1_stocks + tier2_stocks)
+
+    # Determine which horizon tier is being used
+    if days <= 2:
+        horizon_used = 2
+    elif days == 3:
+        horizon_used = 3
+    elif days == 4:
+        horizon_used = 4
+    elif days == 5:
+        horizon_used = 5
+    else:
+        horizon_used = 20
 
     result = run_optimal_backtest(
         days=days,
@@ -821,11 +863,19 @@ def optimal_backtest(
         "methodology": "Train on 2020-2022, test on 2023-2024 (no retraining)",
         "settings": {
             "horizon_days": days,
+            "horizon_tier_used": horizon_used,
             "min_signals": min_signals,
             "tier1_only": tier1_only,
-            "stocks_tested": TIER1_STOCKS if tier1_only else OPTIMAL_STOCKS,
+            "stocks_tested": stocks_tested,
+            "tier1_stocks": tier1_stocks,
+            "tier2_stocks": tier2_stocks,
         },
         **result,
+        "horizon_info": {
+            "description": f"Using stocks optimized for {horizon_used}-day horizon",
+            "tier1_count": len(tier1_stocks),
+            "tier2_count": len(tier2_stocks),
+        },
         "caveats": [
             "These results are from 2023-2024 bull market only",
             "Strategy fails during crisis periods (see /stress-test)",

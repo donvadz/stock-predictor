@@ -116,7 +116,7 @@ function OptimalScan() {
       <p className="card-description">
         Multi-signal consensus strategy: finds stocks where <strong>4+ of 5 signals</strong> align bullish.
         <br />
-        <span className="accuracy-highlight">Tier 1: 80% accuracy | Tier 2: 65-75% accuracy (2023-2024)</span>
+        <span className="accuracy-highlight">Tier 1: 75%+ accuracy | Tier 2: 60-74% accuracy (2023-2024)</span>
       </p>
 
       {/* Tier Info Toggle */}
@@ -130,13 +130,22 @@ function OptimalScan() {
 
         {showTierInfo && (
           <div className="tier-info-panel">
+            {result?.horizon_info && (
+              <div className="horizon-info-banner">
+                <strong>Horizon:</strong> Using stocks optimized for {result.horizon_tier_used}-day horizon
+                ({result.horizon_info.total_stocks} stocks total)
+              </div>
+            )}
             <div className="tier-box tier1-box">
               <div className="tier-header">
                 <span className="tier-badge tier1">Tier 1</span>
-                <span className="tier-accuracy">80% accuracy</span>
+                <span className="tier-accuracy">75%+ accuracy</span>
+                {result?.horizon_info && (
+                  <span className="tier-count">({result.horizon_info.tier1_count} stocks)</span>
+                )}
               </div>
               <div className="tier-stocks-list">
-                {result?.tier_info?.tier1?.stocks?.join(', ') || 'MCD, QQQ, MSFT, MA, COST, SPY, XLK, JPM, CL'}
+                {result?.tier1_stocks?.join(', ') || result?.tier_info?.tier1?.stocks?.join(', ') || 'Loading...'}
               </div>
               <div className="tier-action">
                 <strong>Action:</strong> Full position size, highest confidence
@@ -145,10 +154,13 @@ function OptimalScan() {
             <div className="tier-box tier2-box">
               <div className="tier-header">
                 <span className="tier-badge tier2">Tier 2</span>
-                <span className="tier-accuracy">65-75% accuracy</span>
+                <span className="tier-accuracy">60-74% accuracy</span>
+                {result?.horizon_info && (
+                  <span className="tier-count">({result.horizon_info.tier2_count} stocks)</span>
+                )}
               </div>
               <div className="tier-stocks-list">
-                {result?.tier_info?.tier2?.stocks?.join(', ') || 'AAPL, V, PG, HD, ICE, GS, ORLY, RSG, DUK, SRE, HON, CAT'}
+                {result?.tier2_stocks?.join(', ') || result?.tier_info?.tier2?.stocks?.join(', ') || 'Loading...'}
               </div>
               <div className="tier-action">
                 <strong>Action:</strong> Half position or wait for 5/5 signals
@@ -164,7 +176,7 @@ function OptimalScan() {
           <input
             id="optimal-days"
             type="range"
-            min="5"
+            min="2"
             max="30"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
@@ -172,7 +184,14 @@ function OptimalScan() {
           />
           <span className="slider-value">{days} days</span>
         </div>
-        <span className="input-hint">20 days recommended (highest accuracy)</span>
+        <span className="input-hint">
+          {days <= 2 && '2-day: 11 stocks optimized for very short-term'}
+          {days === 3 && '3-day: 22 stocks optimized for short-term'}
+          {days === 4 && '4-day: 28 stocks optimized for short-term'}
+          {days === 5 && '5-day: 23 stocks optimized for short-term'}
+          {days > 5 && days <= 20 && '20-day stocks (recommended horizon for highest accuracy)'}
+          {days > 20 && '20-day stocks used (best for longer horizons)'}
+        </span>
       </div>
 
       <button onClick={handleScan} disabled={loading}>
@@ -232,7 +251,7 @@ function OptimalScan() {
               <h3>
                 <span className="signal-icon">🎯</span>
                 Tier 1 Signals
-                <span className="tier-accuracy-badge">80% accuracy</span>
+                <span className="tier-accuracy-badge">75%+ accuracy</span>
               </h3>
               <p className="section-note">
                 Best performers - full position size recommended
@@ -264,7 +283,7 @@ function OptimalScan() {
               <h3>
                 <span className="signal-icon">📊</span>
                 Tier 2 Signals
-                <span className="tier-accuracy-badge tier2">65-75% accuracy</span>
+                <span className="tier-accuracy-badge tier2">60-74% accuracy</span>
               </h3>
               <p className="section-note">
                 Good performers - consider half position or require 5/5 signals
@@ -310,7 +329,7 @@ function OptimalScan() {
               <div className="action-grid">
                 <div className="action-item tier1-action">
                   <strong>Tier 1 (4+ signals)</strong>
-                  <p>Full position size. These have 80% historical accuracy.</p>
+                  <p>Full position size. These have 75%+ historical accuracy.</p>
                 </div>
                 <div className="action-item tier2-action">
                   <strong>Tier 2 (4 signals)</strong>
@@ -358,18 +377,29 @@ function OptimalScan() {
               This shows honest, out-of-sample accuracy.
             </p>
 
+            <div className="backtest-horizon-info">
+              <strong>Testing {days}-day horizon</strong>
+              <span className="horizon-stocks-hint">
+                {days <= 2 && ' → Using 11 stocks optimized for 2-day'}
+                {days === 3 && ' → Using 22 stocks optimized for 3-day'}
+                {days === 4 && ' → Using 28 stocks optimized for 4-day'}
+                {days === 5 && ' → Using 23 stocks optimized for 5-day'}
+                {days > 5 && ' → Using 96 stocks optimized for 20-day'}
+              </span>
+            </div>
+
             <button
               className="run-backtest-btn"
               onClick={handleBacktest}
               disabled={backtestLoading}
             >
               {backtestLoading && <span className="spinner"></span>}
-              {backtestLoading ? 'Running Backtest...' : 'Run Backtest'}
+              {backtestLoading ? 'Running Backtest...' : `Run ${days}-Day Backtest`}
             </button>
 
             {backtestLoading && (
               <div className="loading-text">
-                <p>Testing {days}-day predictions across all optimal stocks...</p>
+                <p>Testing {days}-day predictions on horizon-optimized stocks...</p>
                 <p className="loading-timer">Elapsed: {formatTime(backtestElapsed)}</p>
                 <p className="loading-hint">This takes 2-4 minutes</p>
               </div>
@@ -379,6 +409,16 @@ function OptimalScan() {
 
             {backtestResult && (
               <div className="backtest-results">
+                {/* Horizon Info Banner */}
+                {backtestResult.horizon_info && (
+                  <div className="backtest-horizon-banner">
+                    <strong>{backtestResult.settings?.horizon_days}-day backtest</strong>
+                    <span> using {backtestResult.settings?.horizon_tier_used}-day optimized stocks</span>
+                    <span className="stock-counts">
+                      ({backtestResult.horizon_info.tier1_count} Tier 1 + {backtestResult.horizon_info.tier2_count} Tier 2 = {backtestResult.settings?.stocks_tested?.length || 'N/A'} stocks)
+                    </span>
+                  </div>
+                )}
                 <div className="backtest-summary">
                   <div className="summary-stat primary">
                     <span className="stat-value">
