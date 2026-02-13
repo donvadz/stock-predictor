@@ -1241,16 +1241,18 @@ def _run_optimal_backtest_job(job: Job, days: int, min_signals: int, tier1_only:
     cache_key = f"optimal-backtest:{days}:{min_signals}:{tier1_only}"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
+        job.progress = 100
         return cached
 
-    job.progress_message = "Running optimal strategy backtest..."
-    job.progress = 10
+    job.progress_message = "Initializing backtest..."
+    job.progress = 5
 
     if job.cancelled:
         return None
 
     tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
     stocks_tested = tier1_stocks if tier1_only else (tier1_stocks + tier2_stocks)
+    total_stocks = len(stocks_tested)
 
     if days <= 2:
         horizon_used = 2
@@ -1263,19 +1265,31 @@ def _run_optimal_backtest_job(job: Job, days: int, min_signals: int, tier1_only:
     else:
         horizon_used = 20
 
-    job.progress = 20
+    job.progress = 10
+    job.progress_message = f"Testing {total_stocks} stocks..."
 
     if job.cancelled:
         return None
+
+    def progress_callback(current, total, ticker):
+        """Report progress and check cancellation."""
+        if job.cancelled:
+            return False  # Signal cancellation
+        # Progress from 10% to 90% during backtest
+        progress_pct = 10 + int((current / total) * 80)
+        job.progress = progress_pct
+        job.progress_message = f"Testing {ticker} ({current + 1}/{total})..."
+        return True  # Continue
 
     result = run_optimal_backtest(
         days=days,
         min_signals=min_signals,
         tier1_only=tier1_only,
         verbose=False,
+        progress_callback=progress_callback,
     )
 
-    if job.cancelled:
+    if result is None or job.cancelled:
         return None
 
     job.progress = 90
@@ -1319,10 +1333,11 @@ def _run_optimal_scan_job(job: Job, days: int) -> dict:
     cache_key = f"optimal-scan:{days}"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
+        job.progress = 100
         return cached
 
-    job.progress_message = "Running optimal scan..."
-    job.progress = 10
+    job.progress_message = "Initializing scan..."
+    job.progress = 5
 
     if job.cancelled:
         return None
@@ -1330,18 +1345,30 @@ def _run_optimal_scan_job(job: Job, days: int) -> dict:
     regime = get_current_regime(verbose=False)
     tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
     optimal_stocks = tier1_stocks + tier2_stocks
+    total_stocks = len(optimal_stocks)
 
-    job.progress = 30
-
-    if job.cancelled:
-        return None
-
-    result = run_production_scan(days=days, verbose=False)
+    job.progress = 10
+    job.progress_message = f"Scanning {total_stocks} stocks..."
 
     if job.cancelled:
         return None
 
-    job.progress = 80
+    def progress_callback(current, total, ticker):
+        """Report progress and check cancellation."""
+        if job.cancelled:
+            return False  # Signal cancellation
+        # Progress from 10% to 90% during scanning
+        progress_pct = 10 + int((current / total) * 80)
+        job.progress = progress_pct
+        job.progress_message = f"Scanning {ticker} ({current + 1}/{total})..."
+        return True  # Continue
+
+    result = run_production_scan(days=days, verbose=False, progress_callback=progress_callback)
+
+    if result is None or job.cancelled:
+        return None
+
+    job.progress = 90
 
     if "error" in result:
         raise ValueError(result["error"])

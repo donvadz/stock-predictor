@@ -228,8 +228,19 @@ def run_optimal_backtest(
     min_signals: int = 4,
     tier1_only: bool = False,
     verbose: bool = True,
+    progress_callback=None,
 ) -> Dict:
-    """Run backtest with optimal settings."""
+    """Run backtest with optimal settings.
+
+    Args:
+        stocks: List of stocks to test (defaults to horizon-specific stocks)
+        days: Prediction horizon in days
+        min_signals: Minimum signals for high conviction
+        tier1_only: Use only tier 1 stocks
+        verbose: Print progress
+        progress_callback: Optional callback(current, total, ticker) for progress updates.
+                          If callback returns False, backtest will be cancelled.
+    """
     if stocks is None:
         # Get horizon-specific stocks
         tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
@@ -245,8 +256,15 @@ def run_optimal_backtest(
     all_preds = []
     high_conviction = []
     ultra_conviction = []
+    total_stocks = len(stocks)
 
-    for ticker in stocks:
+    for idx, ticker in enumerate(stocks):
+        # Report progress and check for cancellation
+        if progress_callback:
+            should_continue = progress_callback(idx, total_stocks, ticker)
+            if should_continue is False:
+                return None  # Cancelled
+
         if verbose:
             print(f"\nProcessing {ticker}...")
 
@@ -378,10 +396,16 @@ def run_optimal_backtest(
     }
 
 
-def run_production_scan(days: int = 20, verbose: bool = True) -> Dict:
+def run_production_scan(days: int = 20, verbose: bool = True, progress_callback=None) -> Dict:
     """
     Run a production scan for current high-conviction signals.
     This would be used for live trading decisions.
+
+    Args:
+        days: Prediction horizon in days
+        verbose: Whether to print progress
+        progress_callback: Optional callback(current, total, ticker) for progress updates.
+                          If callback returns False, scan will be cancelled.
     """
     # Get horizon-specific stocks
     tier1_stocks, tier2_stocks = get_stocks_for_horizon(days)
@@ -396,8 +420,15 @@ def run_production_scan(days: int = 20, verbose: bool = True) -> Dict:
         print("=" * 70)
 
     signals_found = []
+    total_stocks = len(optimal_stocks)
 
-    for ticker in optimal_stocks:
+    for idx, ticker in enumerate(optimal_stocks):
+        # Report progress and check for cancellation
+        if progress_callback:
+            should_continue = progress_callback(idx, total_stocks, ticker)
+            if should_continue is False:
+                return None  # Cancelled
+
         if verbose:
             print(f"\nScanning {ticker}...")
 
