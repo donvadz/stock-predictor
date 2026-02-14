@@ -374,12 +374,40 @@ def run_regime_aware_backtest(
 def get_current_regime(verbose: bool = True) -> Dict:
     """Get current market regime."""
 
-    spy = yf.Ticker("SPY")
-    spy_df = spy.history(period="1y", interval="1d")
-    spy_df = spy_df.reset_index()
-    spy_df = spy_df.rename(columns={"Date": "timestamp", "Close": "close"})
-    spy_df["timestamp"] = pd.to_datetime(spy_df["timestamp"])
-    spy_df = spy_df.set_index("timestamp")
+    try:
+        spy = yf.Ticker("SPY")
+        spy_df = spy.history(period="1y", interval="1d")
+
+        if spy_df is None or spy_df.empty:
+            return {
+                "regime": "UNKNOWN",
+                "action": "WAIT",
+                "explanation": "Unable to fetch market data. Yahoo Finance may be rate limiting requests. Please try again in a few minutes.",
+                "metrics": {},
+                "error": "rate_limited"
+            }
+
+        spy_df = spy_df.reset_index()
+        spy_df = spy_df.rename(columns={"Date": "timestamp", "Close": "close"})
+        spy_df["timestamp"] = pd.to_datetime(spy_df["timestamp"])
+        spy_df = spy_df.set_index("timestamp")
+    except Exception as e:
+        error_msg = str(e).lower()
+        if 'rate' in error_msg or 'too many' in error_msg or '429' in error_msg:
+            return {
+                "regime": "UNKNOWN",
+                "action": "WAIT",
+                "explanation": "Yahoo Finance is rate limiting requests. Please wait 5-10 minutes and try again.",
+                "metrics": {},
+                "error": "rate_limited"
+            }
+        return {
+            "regime": "UNKNOWN",
+            "action": "WAIT",
+            "explanation": f"Error fetching market data: {str(e)}",
+            "metrics": {},
+            "error": str(e)
+        }
 
     try:
         vix = yf.Ticker("^VIX")

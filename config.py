@@ -162,3 +162,138 @@ STOCK_LIST = [
     "IRDM",   # Iridium
     "IONQ",   # IonQ (Quantum Computing)
 ]
+
+# Expanded stock universe for long-term composite scoring
+# Combines S&P 500 + NASDAQ-100 + current STOCK_LIST (deduplicated)
+# ~550 stocks for comprehensive fundamental analysis
+COMPOSITE_STOCK_LIST = [
+    # === S&P 500 CORE (Top 150 by market cap) ===
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA", "BRK.B",
+    "UNH", "XOM", "JNJ", "JPM", "V", "PG", "MA", "HD", "CVX", "MRK",
+    "ABBV", "LLY", "PEP", "KO", "COST", "AVGO", "WMT", "MCD", "CSCO", "TMO",
+    "ACN", "ABT", "BAC", "CRM", "DHR", "PFE", "CMCSA", "VZ", "ADBE", "NKE",
+    "TXN", "NFLX", "WFC", "PM", "ORCL", "AMD", "INTC", "UPS", "RTX", "NEE",
+    "HON", "COP", "BMY", "QCOM", "LOW", "UNP", "MS", "SPGI", "INTU", "IBM",
+    "ELV", "BA", "AMGN", "GE", "CAT", "DE", "SBUX", "GS", "ISRG", "PLD",
+    "GILD", "MDT", "AXP", "BLK", "LMT", "SYK", "BKNG", "ADI", "MDLZ", "CVS",
+    "TMUS", "CB", "REGN", "AMT", "SCHW", "TJX", "LRCX", "ADP", "MMC", "MO",
+    "CI", "EOG", "SLB", "ZTS", "VRTX", "SO", "DUK", "CME", "SNPS", "CDNS",
+    "BDX", "CL", "ITW", "BSX", "EQIX", "FI", "WM", "ETN", "APD", "AON",
+    "NOC", "SHW", "ICE", "KLAC", "PNC", "HCA", "CSX", "EMR", "PGR", "MPC",
+    "ORLY", "GD", "MCO", "FCX", "MCK", "USB", "AZO", "MAR", "CTAS", "MCHP",
+    "NSC", "ROP", "AJG", "MSI", "SRE", "AFL", "PSX", "TT", "APH", "AEP",
+    "CMG", "PCAR", "F", "GM", "TRV", "KMB", "WELL", "ADSK", "PAYX", "PSA",
+
+    # === NASDAQ-100 ADDITIONS ===
+    "DXCM", "PANW", "MNST", "CPRT", "PYPL", "MELI", "FTNT", "IDXX", "ODFL",
+    "FAST", "CSGP", "AEE", "KHC", "VRSK", "DLTR", "CDW", "GIS", "BKR", "EW",
+    "CTSH", "BIIB", "KDP", "ON", "TEAM", "ALGN", "WBD", "ENPH", "ANSS", "ZS",
+    "DDOG", "CRWD", "CEG", "TTD", "SIRI", "LCID", "RIVN", "FANG", "GEHC",
+
+    # === HIGH GROWTH MID-CAPS (from original list) ===
+    # Cloud & Cybersecurity
+    "NET", "S", "SNOW", "MDB", "ESTC", "CFLT", "GTLB",
+    # AI & Software
+    "PLTR", "AI", "PATH", "HUBS", "U", "RBLX", "DUOL", "ASAN", "DOCN",
+    # Electric Vehicles & Clean Energy
+    "NIO", "XPEV", "LI", "CHPT", "PLUG", "FSLR", "SEDG", "RUN", "BE", "STEM",
+    # Semiconductors
+    "MRVL", "WOLF", "LSCC", "CRUS", "SITM",
+    # Healthcare Tech
+    "VEEV", "DOCS", "HIMS",
+    # E-commerce & Consumer Tech
+    "SHOP", "ETSY", "CHWY", "SE",
+    # Space & Communications
+    "RKLB", "ASTS", "IRDM", "IONQ",
+    # Fintech
+    "SQ", "COIN", "AFRM", "UPST", "SOFI", "HOOD",
+
+    # === ADDITIONAL S&P 500 COMPONENTS ===
+    "MSCI", "MPWR", "KEYS", "TDG", "FICO", "TRGP", "VLTO", "DECK", "AXON",
+    "EXC", "D", "PEG", "ED", "XEL", "ES", "AWK", "WEC", "DTE", "AES",
+    "HES", "DVN", "OXY", "HAL", "MRO", "VLO", "PSX", "HUM", "CNC", "MOH",
+    "A", "ILMN", "IQV", "TECH", "WAT", "MTD", "PKI", "HOLX", "DGX", "LH",
+    "STZ", "DEO", "TAP", "SAM", "BF.B", "MNST", "CCEP", "KDP", "STZ",
+    "AIG", "ALL", "MET", "PRU", "TRV", "HIG", "CINF", "GL", "AFG", "WRB",
+    "FIS", "GPN", "JKHY", "ADP", "PAYX", "PAYC", "PCTY", "WEX", "BR",
+    "CARR", "JCI", "TT", "LII", "GNRC", "HUBB", "EME", "PWR", "FSLR",
+    "POOL", "WSO", "SNA", "SWK", "FAST", "GWW", "W.W. Grainger", "NDSN",
+    "DOV", "IR", "PH", "ROK", "AME", "ZBRA", "GRMN", "TER", "ENTG",
+    "J", "TTEK", "FTV", "BAH", "LDOS", "SAIC", "KBR", "CACI", "BWXT",
+    "LKQ", "APTV", "BWA", "ALV", "MGA", "LEA", "GNTX", "VC", "DAN",
+    "ROL", "CHRW", "XPO", "EXPD", "JBHT", "SNDR", "LSTR", "SAIA", "WERN",
+    "RCL", "CCL", "NCLH", "MAR", "HLT", "H", "WH", "CHH", "IHG",
+    "EXPE", "ABNB", "TRIP", "BKNG", "UBER", "LYFT", "DASH", "GRAB",
+    "DRI", "CMG", "YUM", "QSR", "WING", "CAVA", "SHAK", "DPZ", "MCD",
+    "WEN", "JACK", "PZZA", "EAT", "TXRH", "CAKE", "DIN", "BLMN",
+
+    # === MATERIALS & INDUSTRIALS ===
+    "LIN", "APD", "ECL", "SHW", "PPG", "NUE", "STLD", "RS", "CMC", "X",
+    "CLF", "AA", "CENX", "KALU", "HUN", "WLK", "OLN", "CE", "EMN", "IFF",
+    "ALB", "LIVENT", "LAC", "PLL", "MP", "SGML", "UUUU",
+
+    # === REITS ===
+    "AMT", "PLD", "CCI", "EQIX", "PSA", "SPG", "O", "WELL", "DLR", "AVB",
+    "EQR", "VTR", "ARE", "BXP", "SLG", "VNO", "KIM", "REG", "FRT", "NNN",
+    "WPC", "STOR", "STAG", "REXR", "FR", "EGP", "COLD", "IIPR",
+
+    # === FINANCIALS ===
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "USB", "PNC", "TFC", "COF",
+    "BK", "STT", "NTRS", "AXP", "DFS", "SYF", "ALLY", "CACC", "OMF",
+    "CME", "ICE", "NDAQ", "CBOE", "MKTX", "VIRT", "SCHW", "IBKR", "RJF",
+    "SF", "EVR", "LAZ", "HLI", "PJT", "MC", "GHL", "JEF", "PIPR",
+    "BX", "KKR", "APO", "CG", "ARES", "OWL", "VCTR", "AB", "IVZ",
+    "BEN", "TROW", "SEIC", "VRTS", "JHG", "APAM", "FHI", "EV",
+
+    # === HEALTHCARE ===
+    "UNH", "JNJ", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "DHR", "BMY",
+    "AMGN", "GILD", "REGN", "VRTX", "BIIB", "MRNA", "BNTX", "SGEN", "BGNE",
+    "ALNY", "INCY", "EXEL", "SRPT", "BMRN", "UTHR", "IONS", "NBIX", "PTCT",
+    "BSX", "MDT", "SYK", "EW", "ZBH", "ISRG", "HOLX", "DXCM", "PODD", "TFX",
+    "STE", "BAX", "BDX", "WAT", "A", "MTD", "PKI", "TECH", "IDXX", "ALGN",
+    "HCA", "UHS", "THC", "CYH", "SEM", "ACHC", "ENSG", "NHC", "PNTG",
+    "CVS", "WBA", "MCK", "ABC", "CAH", "OMI", "PDCO", "HSIC",
+
+    # === COMMUNICATION SERVICES ===
+    "GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "CHTR", "TMUS",
+    "EA", "ATVI", "TTWO", "RBLX", "U", "SE", "BILI", "HUYA", "DOYU",
+    "MTCH", "BMBL", "PINS", "SNAP", "TWTR", "ZM", "SPOT", "TME", "IQ",
+    "WBD", "PARA", "FOXA", "LYV", "MSGS", "WWE", "EDR", "SKLZ",
+    "SIRI", "IHRT", "CMN", "NXST", "TGNA", "SSP", "GTN", "NWS", "NYT",
+
+    # === CONSUMER DISCRETIONARY ===
+    "AMZN", "TSLA", "HD", "LOW", "NKE", "SBUX", "TJX", "BKNG", "MCD",
+    "ROST", "DG", "DLTR", "TGT", "BBY", "ULTA", "LULU", "GPS", "ANF",
+    "URBN", "AEO", "EXPR", "CTRN", "PLCE", "RVLV", "FTCH", "REAL",
+    "ETSY", "W", "OSTK", "CVNA", "CARG", "VROOM", "SFT", "LOTZ",
+    "RH", "WSM", "ARHS", "SNBR", "LOVE", "TPX", "LEG", "ETH",
+    "F", "GM", "RIVN", "LCID", "FSR", "NIO", "XPEV", "LI", "GOEV",
+    "AN", "PAG", "LAD", "SAH", "ABG", "GPI", "DRVN", "SIX",
+    "GRMN", "BC", "PII", "HOG", "THO", "WGO", "LCII", "CWH",
+    "HAS", "MAT", "FNKO", "JAKK", "PLBY", "GOLF", "ELY", "MODG",
+    "MGM", "WYNN", "LVS", "CZR", "PENN", "DKNG", "RSI", "GNOG",
+
+    # === CONSUMER STAPLES ===
+    "PG", "KO", "PEP", "COST", "WMT", "PM", "MO", "MDLZ", "CL", "KMB",
+    "EL", "STZ", "GIS", "K", "KHC", "HSY", "HRL", "CPB", "SJM", "MKC",
+    "TSN", "CAG", "INGR", "BGS", "POST", "HAIN", "SMPL", "FRPT",
+    "CLX", "CHD", "SPB", "SWM", "NWL", "REV", "IPAR", "EPC", "ENR",
+    "KR", "ACI", "SFM", "GO", "IMKTA", "CASY", "UNFI", "SPTN", "KDP",
+    "MNST", "FIZZ", "CELH", "ZVIA", "BFI", "SAM", "TAP", "STZ",
+
+    # === ENERGY ===
+    "XOM", "CVX", "COP", "EOG", "SLB", "PXD", "MPC", "VLO", "PSX",
+    "OXY", "HES", "DVN", "FANG", "HAL", "BKR", "MRO", "APA", "MTDR",
+    "OVV", "RRC", "EQT", "AR", "SWN", "CNX", "COG", "CTRA",
+    "WMB", "KMI", "OKE", "TRGP", "LNG", "ET", "EPD", "MPLX", "PAA",
+    "DK", "PARR", "PBF", "HFC", "CVI", "DINO", "CLMT", "CAPL",
+
+    # === UTILITIES ===
+    "NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "PEG", "ED",
+    "WEC", "DTE", "ES", "AES", "ETR", "FE", "PPL", "CMS", "CNP", "AEE",
+    "EVRG", "NI", "PNW", "OGE", "LNT", "MGEE", "NWE", "AVA", "BKH",
+    "AWK", "WTRG", "CWT", "SJW", "AWR", "YORW", "ARTNA", "MSEX",
+]
+
+# Deduplicate the list
+COMPOSITE_STOCK_LIST = list(dict.fromkeys(COMPOSITE_STOCK_LIST))

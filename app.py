@@ -37,6 +37,26 @@ from optimal_strategy import (
     get_stocks_for_horizon,
 )
 from stress_test import run_all_stress_tests, run_crisis_backtest
+from composite_score import (
+    calculate_composite_score,
+    rank_all_stocks,
+    get_top_decile,
+    get_sector_rankings,
+    get_available_sectors,
+)
+from composite_backtest import (
+    run_composite_backtest,
+    run_quintile_analysis,
+    run_grade_analysis,
+    run_factor_analysis,
+    run_sector_relative_analysis,
+)
+from composite_backtest_rigorous import (
+    run_portfolio_simulation,
+    run_monte_carlo_significance,
+    run_rigorous_backtest,
+)
+from config import COMPOSITE_STOCK_LIST
 
 app = FastAPI(title="Stock Direction Predictor")
 
@@ -610,8 +630,26 @@ def check_regime():
     IMPORTANT: This strategy has been tested to FAIL during crisis periods
     (2008, 2018 Q4, 2020 COVID). The regime check helps avoid those periods.
     """
-    regime = get_current_regime(verbose=False)
-    return regime
+    try:
+        regime = get_current_regime(verbose=False)
+        return regime
+    except Exception as e:
+        error_msg = str(e).lower()
+        if 'rate' in error_msg or 'too many' in error_msg or '429' in error_msg:
+            return {
+                "regime": "UNKNOWN",
+                "action": "WAIT",
+                "explanation": "Yahoo Finance is rate limiting requests. Please wait 5-10 minutes and try again.",
+                "metrics": {},
+                "error": "rate_limited"
+            }
+        return {
+            "regime": "UNKNOWN",
+            "action": "WAIT",
+            "explanation": f"Error checking regime: {str(e)}",
+            "metrics": {},
+            "error": str(e)
+        }
 
 
 @app.get("/about")
@@ -920,6 +958,528 @@ def optimal_backtest(
 
     prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
     return response
+
+
+# =============================================================================
+# COMPOSITE SCORE ENDPOINTS - Long-term fundamental scoring
+# =============================================================================
+
+
+@app.get("/composite-scores")
+def get_composite_scores(
+    sector: Optional[str] = Query(None, description="Filter by sector (e.g., 'Technology', 'Healthcare')"),
+    grade: Optional[str] = Query(None, description="Filter by grade (A, B, C, D, F)"),
+    horizon: int = Query(24, description="Investment horizon in months (1, 3, 6, 12, 24, 60, 120)"),
+    limit: int = Query(50, ge=1, le=500, description="Number of results to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+):
+    """
+    Get composite scores for all stocks in the universe, ranked by score.
+
+    This endpoint provides long-term fundamental analysis scores combining:
+    - Growth (30%): Revenue growth, earnings growth, price momentum (over horizon period)
+    - Quality (30%): ROE, ROA, profit margin, operating margin
+    - Financial Strength (20%): Debt-to-equity, current ratio, institutional holders
+    - Valuation (20%): P/E vs sector, PEG ratio, price-to-book
+
+    Args:
+        horizon: Investment horizon in months. Common values:
+                 - 1 (30 days): Very short-term momentum
+                 - 3 (3 months): Short-term
+                 - 6 (6 months): Medium-term
+                 - 12 (1 year): Standard
+                 - 24 (2 years): Long-term (default)
+                 - 60 (5 years): Full market cycle
+                 - 120 (10 years): Multiple cycles
+
+    Use filters to narrow down results by sector or grade.
+    """
+    # Validate horizon
+    horizon = min(max(horizon, 1), 120)
+
+    cache_key = f"composite-scores:{sector}:{grade}:{horizon}m:{limit}:{offset}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Get all rankings with specified horizon
+    if sector:
+        all_ranked = get_sector_rankings(sector, horizon_months=horizon)
+    else:
+        all_ranked = rank_all_stocks(horizon_months=horizon)
+
+    if all_ranked is None:
+        raise HTTPException(status_code=500, detail="Failed to calculate composite scores")
+
+    # Filter by grade if specified
+    if grade:
+        all_ranked = [s for s in all_ranked if s.get("grade") == grade.upper()]
+
+    total_count = len(all_ranked)
+
+    # Apply pagination
+    paginated = all_ranked[offset:offset + limit]
+
+    # Get available sectors for filtering
+    sectors = get_available_sectors(horizon_months=horizon)
+
+    # Calculate grade distribution
+    grade_counts = {}
+    for stock in all_ranked:
+        g = stock.get("grade", "F")
+        grade_counts[g] = grade_counts.get(g, 0) + 1
+
+    # Generate period label
+    if horizon == 1:
+        period_label = "30 days"
+    elif horizon < 12:
+        period_label = f"{horizon} months"
+    elif horizon == 12:
+        period_label = "1 year"
+    else:
+        period_label = f"{horizon // 12} years"
+
+    response = {
+        "total_stocks": total_count,
+        "universe_size": len(COMPOSITE_STOCK_LIST),
+        "horizon_months": horizon,
+        "horizon_label": period_label,
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "sector": sector,
+            "grade": grade,
+            "horizon_months": horizon,
+        },
+        "available_sectors": sectors,
+        "grade_distribution": grade_counts,
+        "stocks": paginated,
+        "methodology": {
+            "growth_weight": "30%",
+            "quality_weight": "30%",
+            "financial_strength_weight": "20%",
+            "valuation_weight": "20%",
+            "price_momentum_period": period_label,
+            "scoring": "Percentile-based normalization across universe",
+            "grades": {
+                "A": "80-100",
+                "B": "65-79",
+                "C": "50-64",
+                "D": "35-49",
+                "F": "0-34",
+            },
+        },
+    }
+
+    prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
+    return response
+
+
+@app.get("/composite-score/{ticker}")
+def get_composite_score_single(ticker: str):
+    """
+    Get detailed composite score breakdown for a single stock.
+
+    Returns:
+    - Overall composite score (0-100)
+    - Letter grade (A/B/C/D/F)
+    - Sub-scores for each category (Growth, Quality, Financial, Valuation)
+    - Raw metric values and individual scores
+    - Sector comparison data
+    """
+    ticker = ticker.upper()
+
+    cache_key = f"composite-score-single:{ticker}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Calculate score for this stock
+    result = calculate_composite_score(ticker)
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Could not calculate composite score for {ticker}. Stock may not have sufficient fundamental data."
+        )
+
+    # Get rank within universe
+    all_ranked = rank_all_stocks()
+    rank = None
+    percentile = None
+    if all_ranked:
+        for i, stock in enumerate(all_ranked):
+            if stock.get("ticker") == ticker:
+                rank = i + 1
+                percentile = round((1 - (i / len(all_ranked))) * 100, 1)
+                break
+
+    response = {
+        **result,
+        "rank": rank,
+        "percentile": percentile,
+        "universe_size": len(COMPOSITE_STOCK_LIST),
+        "interpretation": _interpret_composite_score(result),
+    }
+
+    prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
+    return response
+
+
+@app.get("/composite-top-decile")
+def get_top_decile_stocks(
+    horizon: int = Query(24, description="Investment horizon in months (1, 3, 6, 12, 24, 60, 120)"),
+):
+    """
+    Get the top 10% of stocks by composite score.
+
+    These are the highest-quality investment candidates based on
+    fundamental analysis across Growth, Quality, Financial Strength,
+    and Valuation metrics.
+
+    Args:
+        horizon: Investment horizon in months (1=30d, 3=3m, 6=6m, 12=1y, 24=2y, 60=5y, 120=10y)
+    """
+    horizon = min(max(horizon, 1), 120)
+
+    cache_key = f"composite-top-decile:{horizon}m"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    top_stocks = get_top_decile(horizon_months=horizon)
+
+    if not top_stocks:
+        raise HTTPException(status_code=500, detail="Failed to calculate top decile")
+
+    # Generate period label
+    if horizon == 1:
+        period_label = "30 days"
+    elif horizon < 12:
+        period_label = f"{horizon} months"
+    elif horizon == 12:
+        period_label = "1 year"
+    else:
+        period_label = f"{horizon // 12} years"
+
+    response = {
+        "horizon_months": horizon,
+        "horizon_label": period_label,
+        "decile_size": len(top_stocks),
+        "universe_size": len(COMPOSITE_STOCK_LIST),
+        "average_score": round(sum(s["composite_score"] for s in top_stocks) / len(top_stocks), 1),
+        "stocks": top_stocks,
+    }
+
+    prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
+    return response
+
+
+def _interpret_composite_score(result: dict) -> dict:
+    """Generate interpretation text for a composite score."""
+    score = result.get("composite_score", 0)
+    grade = result.get("grade", "F")
+
+    # Overall interpretation
+    if grade == "A":
+        overall = "Excellent fundamentals across all categories. Strong long-term investment candidate."
+    elif grade == "B":
+        overall = "Good fundamentals with some areas of strength. Solid investment consideration."
+    elif grade == "C":
+        overall = "Average fundamentals. May have specific strengths but also notable weaknesses."
+    elif grade == "D":
+        overall = "Below average fundamentals. Significant concerns in multiple areas."
+    else:
+        overall = "Weak fundamentals. High risk for long-term investment."
+
+    # Category-specific insights
+    insights = []
+
+    growth = result.get("growth_score")
+    if growth is not None:
+        if growth >= 70:
+            insights.append("Strong growth trajectory with solid revenue and earnings momentum.")
+        elif growth >= 50:
+            insights.append("Moderate growth metrics, room for improvement.")
+        else:
+            insights.append("Weak growth indicators may limit upside potential.")
+
+    quality = result.get("quality_score")
+    if quality is not None:
+        if quality >= 70:
+            insights.append("High quality operations with strong profitability metrics.")
+        elif quality >= 50:
+            insights.append("Average operational quality.")
+        else:
+            insights.append("Profitability concerns warrant careful evaluation.")
+
+    financial = result.get("financial_strength_score")
+    if financial is not None:
+        if financial >= 70:
+            insights.append("Strong balance sheet with manageable debt levels.")
+        elif financial >= 50:
+            insights.append("Adequate financial position.")
+        else:
+            insights.append("Financial health may be a concern. Check debt levels.")
+
+    valuation = result.get("valuation_score")
+    if valuation is not None:
+        if valuation >= 70:
+            insights.append("Attractively valued relative to fundamentals and sector.")
+        elif valuation >= 50:
+            insights.append("Fairly valued at current prices.")
+        else:
+            insights.append("May be overvalued. Consider entry price carefully.")
+
+    return {
+        "overall": overall,
+        "insights": insights,
+        "recommendation": "Consider for long-term portfolio" if grade in ["A", "B"] else "Research further before investing",
+    }
+
+
+# =============================================================================
+# COMPOSITE SCORE BACKTEST ENDPOINTS
+# =============================================================================
+
+
+@app.get("/composite-backtest")
+def composite_backtest(
+    return_period: str = Query("90d", description="Return period: 30d, 90d, 180d, 365d"),
+    stocks_count: int = Query(200, ge=50, le=500, description="Number of stocks to analyze"),
+):
+    """
+    Run comprehensive backtest of the composite scoring system.
+
+    Tests whether higher composite scores actually predict better returns.
+
+    Includes:
+    - Quintile Analysis: Compare top 20% vs bottom 20%
+    - Grade Performance: A/B/C/D/F return comparison
+    - Factor Analysis: Which factors (Growth, Quality, etc.) predict best
+    - Sector-Relative: Do high scores beat their sector?
+
+    WARNING: This uses current fundamentals with historical returns,
+    which introduces look-ahead bias. Results are indicative, not definitive.
+    """
+    valid_periods = ["30d", "90d", "180d", "365d"]
+    if return_period not in valid_periods:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid return_period. Must be one of: {valid_periods}"
+        )
+
+    cache_key = f"composite-backtest-api:{stocks_count}:{return_period}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+    result = run_composite_backtest(stocks, return_period)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    prediction_cache.set(cache_key, result, 21600)
+    return result
+
+
+@app.get("/composite-backtest/quintile")
+def composite_quintile_backtest(
+    return_period: str = Query("90d", description="Return period: 30d, 90d, 180d, 365d"),
+    stocks_count: int = Query(200, ge=50, le=500, description="Number of stocks to analyze"),
+):
+    """
+    Run quintile analysis on composite scores.
+
+    Divides stocks into 5 groups by score and compares returns.
+    Top quintile should outperform bottom quintile if scoring works.
+    """
+    valid_periods = ["30d", "90d", "180d", "365d"]
+    if return_period not in valid_periods:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid return_period. Must be one of: {valid_periods}"
+        )
+
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+    result = run_quintile_analysis(stocks, return_period)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.get("/composite-backtest/factor")
+def composite_factor_backtest(
+    return_period: str = Query("90d", description="Return period: 30d, 90d, 180d, 365d"),
+    stocks_count: int = Query(150, ge=50, le=300, description="Number of stocks to analyze"),
+):
+    """
+    Test which factors (Growth, Quality, Financial, Valuation) best predict returns.
+
+    Useful for understanding which parts of the composite score add value.
+    """
+    valid_periods = ["30d", "90d", "180d", "365d"]
+    if return_period not in valid_periods:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid return_period. Must be one of: {valid_periods}"
+        )
+
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+    result = run_factor_analysis(stocks, return_period)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.get("/composite-backtest/sector")
+def composite_sector_backtest(
+    return_period: str = Query("90d", description="Return period: 30d, 90d, 180d, 365d"),
+    stocks_count: int = Query(200, ge=50, le=500, description="Number of stocks to analyze"),
+):
+    """
+    Test if high-scoring stocks outperform their sector average.
+
+    This controls for sector-wide movements and shows stock-picking alpha.
+    """
+    valid_periods = ["30d", "90d", "180d", "365d"]
+    if return_period not in valid_periods:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid return_period. Must be one of: {valid_periods}"
+        )
+
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+    result = run_sector_relative_analysis(stocks, return_period)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+# =============================================================================
+# RIGOROUS BACKTEST ENDPOINTS - Portfolio simulation & statistical tests
+# =============================================================================
+
+
+@app.get("/composite-backtest/portfolio")
+def composite_portfolio_backtest(
+    top_n: int = Query(20, ge=5, le=50, description="Number of top stocks to hold"),
+    rebalance_months: int = Query(3, ge=1, le=12, description="Months between rebalancing"),
+    stocks_count: int = Query(150, ge=50, le=300, description="Universe size"),
+    years: int = Query(2, ge=1, le=10, description="Simulation years (1-10)"),
+):
+    """
+    Run a walk-forward portfolio simulation.
+
+    This is a more realistic backtest that:
+    - Simulates buying top N ranked stocks
+    - Rebalances at regular intervals
+    - Tracks actual portfolio value over time
+    - Compares to SPY benchmark
+
+    The scoring uses point-in-time data to minimize look-ahead bias:
+    - Momentum calculated from historical prices only
+    - Volatility calculated from historical prices only
+    - Trend signals from historical moving averages
+    - Fundamentals (some bias - assumes relatively stable)
+
+    Args:
+        years: Simulation period (1-10 years). Longer periods capture more
+               market cycles including crises and recoveries.
+
+    Returns alpha vs SPY, Sharpe ratio, max drawdown, and equity curve.
+    """
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+
+    result = run_portfolio_simulation(
+        stocks=stocks,
+        top_n=top_n,
+        rebalance_months=rebalance_months,
+        simulation_years=years,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.get("/composite-backtest/significance")
+def composite_significance_test(
+    num_simulations: int = Query(500, ge=100, le=2000, description="Number of Monte Carlo simulations"),
+    top_n: int = Query(20, ge=5, le=50, description="Portfolio size"),
+    return_period_days: int = Query(90, ge=30, le=365, description="Return measurement period"),
+    stocks_count: int = Query(100, ge=50, le=200, description="Universe size"),
+):
+    """
+    Monte Carlo test for statistical significance.
+
+    Compares the strategy's returns against randomly selected portfolios.
+    If the strategy beats >95% of random portfolios, it's statistically significant.
+
+    This answers: "Is this strategy better than random stock picking?"
+
+    Returns:
+    - p-value (< 0.05 is significant)
+    - Percentile rank vs random portfolios
+    - Distribution of random returns
+    """
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+
+    result = run_monte_carlo_significance(
+        stocks=stocks,
+        num_simulations=num_simulations,
+        top_n=top_n,
+        return_period_days=return_period_days,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.get("/composite-backtest/rigorous")
+def composite_rigorous_backtest(
+    stocks_count: int = Query(150, ge=50, le=300, description="Universe size"),
+    years: int = Query(2, ge=1, le=10, description="Simulation years (1-10)"),
+):
+    """
+    Run comprehensive rigorous backtest.
+
+    Combines:
+    1. Walk-forward portfolio simulation (quarterly rebalancing)
+    2. Monte Carlo significance test (500 simulations)
+
+    This provides the strongest evidence for whether the scoring system works:
+    - Portfolio alpha vs SPY benchmark
+    - Statistical significance (p-value)
+    - Risk-adjusted returns (Sharpe ratio)
+    - Maximum drawdown
+
+    Args:
+        stocks_count: Number of stocks in universe (50-300)
+        years: Simulation period in years (1-10). Use 2-5 for normal testing,
+               5-10 for long-term crisis/recovery analysis.
+
+    WARNING: This is computationally intensive. 2 years takes ~2-5 minutes,
+    longer periods take proportionally longer.
+    """
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+
+    result = run_rigorous_backtest(stocks=stocks, simulation_years=years)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
 
 
 # =============================================================================

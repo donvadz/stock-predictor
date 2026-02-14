@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -10,6 +11,12 @@ from config import LOOKBACK_DAYS_SHORT, LOOKBACK_DAYS_LONG, STOCK_DATA_CACHE_TTL
 
 # Suppress yfinance error messages for ETFs without fundamentals
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
+logger = logging.getLogger(__name__)
+
+# Rate limit handling
+_last_request_time = 0
+_request_delay = 0.5  # 500ms between requests to avoid rate limiting
 
 # Sector encoding for ML model
 SECTOR_ENCODING = {
@@ -27,13 +34,15 @@ SECTOR_ENCODING = {
 }
 
 
-def fetch_fundamental_data(ticker: str) -> Optional[dict]:
+def fetch_fundamental_data(ticker: str, max_retries: int = 3) -> Optional[dict]:
     """
     Fetch fundamental data from Yahoo Finance.
 
     Returns dict with company info, analyst recommendations, earnings, etc.
     Returns None if data unavailable.
     """
+    global _last_request_time
+
     ticker = ticker.upper()
 
     # Check cache
@@ -42,10 +51,41 @@ def fetch_fundamental_data(ticker: str) -> Optional[dict]:
     if cached is not None:
         return cached
 
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
+    # Rate limiting - ensure minimum delay between requests
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < _request_delay:
+        time.sleep(_request_delay - elapsed)
+    _last_request_time = time.time()
 
+    # Retry with exponential backoff for rate limits
+    stock = None
+    info = None
+    for attempt in range(max_retries):
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            if info:
+                break  # Success, exit retry loop
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'rate' in error_msg or 'too many' in error_msg or '429' in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
+                    logger.warning(f"Rate limited fetching {ticker}, retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Rate limit exceeded for {ticker} after {max_retries} retries")
+                    return None
+            else:
+                logger.warning(f"Error fetching fundamentals for {ticker}: {e}")
+                return None
+
+    if not info:
+        return None
+
+    try:
         # Extract company info
         fundamentals = {
             # Name
@@ -187,14 +227,31 @@ def fetch_stock_data(ticker: str, prediction_days: int = 5) -> Optional[pd.DataF
     end_date = datetime.now()
     start_date = end_date - timedelta(days=lookback_days)
 
-    # Fetch from Yahoo Finance
-    try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(start=start_date, end=end_date, interval="1d")
-    except Exception:
-        return None
+    # Rate limiting
+    global _last_request_time
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < _request_delay:
+        time.sleep(_request_delay - elapsed)
+    _last_request_time = time.time()
 
-    if df.empty:
+    # Fetch from Yahoo Finance with retry
+    df = None
+    for attempt in range(3):
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(start=start_date, end=end_date, interval="1d")
+            break
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'rate' in error_msg or 'too many' in error_msg:
+                if attempt < 2:
+                    wait_time = (2 ** attempt) * 2
+                    time.sleep(wait_time)
+                    continue
+            return None
+
+    if df is None or df.empty:
         return None
 
     # Rename columns to match expected format
@@ -213,5 +270,80 @@ def fetch_stock_data(ticker: str, prediction_days: int = 5) -> Optional[pd.DataF
 
     # Cache the result
     stock_data_cache.set(cache_key, df, STOCK_DATA_CACHE_TTL)
+
+    return df
+
+
+def fetch_stock_data_extended(ticker: str, years: int = 10) -> Optional[pd.DataFrame]:
+    """
+    Fetch extended historical stock data from Yahoo Finance.
+
+    Supports up to 10 years of daily data for long-term backtesting.
+
+    Args:
+        ticker: Stock ticker symbol
+        years: Number of years of history (1-10)
+
+    Returns:
+        DataFrame with columns: timestamp, open, high, low, close, volume
+        Returns None if no data available.
+    """
+    ticker = ticker.upper()
+    years = min(max(years, 1), 10)  # Clamp to 1-10 years
+    lookback_days = years * 365
+
+    # Check cache first
+    cache_key = f"{ticker}:extended:{years}y"
+    cached = stock_data_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Calculate date range
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=lookback_days)
+
+    # Rate limiting
+    global _last_request_time
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < _request_delay:
+        time.sleep(_request_delay - elapsed)
+    _last_request_time = time.time()
+
+    # Fetch from Yahoo Finance with retry
+    df = None
+    for attempt in range(3):
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(start=start_date, end=end_date, interval="1d")
+            break
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'rate' in error_msg or 'too many' in error_msg:
+                if attempt < 2:
+                    wait_time = (2 ** attempt) * 2
+                    time.sleep(wait_time)
+                    continue
+            return None
+
+    if df is None or df.empty:
+        return None
+
+    # Rename columns to match expected format
+    df = df.reset_index()
+    df = df.rename(columns={
+        "Date": "timestamp",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+    })
+
+    # Keep only needed columns
+    df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+
+    # Cache the result (longer TTL for extended data since it changes less)
+    stock_data_cache.set(cache_key, df, STOCK_DATA_CACHE_TTL * 2)
 
     return df

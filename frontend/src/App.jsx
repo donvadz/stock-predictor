@@ -7,6 +7,7 @@ import Backtest from './components/Backtest.jsx'
 import ScreenerBacktest from './components/ScreenerBacktest.jsx'
 import RegimeGatedBacktest from './components/RegimeGatedBacktest.jsx'
 import StressTest from './components/StressTest.jsx'
+import CompositeRanking from './components/CompositeRanking.jsx'
 
 function App() {
   const [showAbout, setShowAbout] = useState(false)
@@ -55,6 +56,13 @@ function App() {
           <span className="tab-icon">⚠️</span>
           Stress Test
         </button>
+        <button
+          className={`tab-button ${activeTab === 'longterm' ? 'active' : ''}`}
+          onClick={() => setActiveTab('longterm')}
+        >
+          <span className="tab-icon">🏆</span>
+          Long-Term
+        </button>
       </nav>
 
       <main>
@@ -86,6 +94,13 @@ function App() {
         {activeTab === 'stress' && (
           <div className="tab-content stress-tab">
             <StressTest />
+          </div>
+        )}
+
+        {/* Long-Term Rankings Tab */}
+        {activeTab === 'longterm' && (
+          <div className="tab-content longterm-tab">
+            <CompositeRanking />
           </div>
         )}
       </main>
