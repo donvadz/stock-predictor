@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 import numpy as np
 import random
+from scipy import stats
 
 from cache import prediction_cache, stock_data_cache
 from data import fetch_stock_data, fetch_stock_data_extended, fetch_fundamental_data, SECTOR_ENCODING
@@ -556,9 +557,49 @@ def run_portfolio_simulation(
     return result
 
 
+def _calculate_technical_only_score(
+    ticker: str,
+    prices: Dict[str, float],
+    as_of_date: str
+) -> Optional[float]:
+    """
+    Calculate score using ONLY price-based metrics (no fundamentals).
+
+    This avoids forward-looking bias entirely since all inputs
+    are derived from historical prices available at as_of_date.
+    """
+    momentum = _calculate_momentum_score(prices, as_of_date, 252)
+    volatility = _calculate_volatility_score(prices, as_of_date, 63)
+    trend = _calculate_trend_score(prices, as_of_date)
+
+    components = []
+    weights = []
+
+    if momentum is not None:
+        norm_momentum = max(0, min(100, 50 + momentum))
+        components.append(norm_momentum)
+        weights.append(0.40)  # Increased weight (was 30% of 75%)
+
+    if volatility is not None:
+        components.append(volatility)
+        weights.append(0.27)  # Increased weight (was 20% of 75%)
+
+    if trend is not None:
+        components.append(trend)
+        weights.append(0.33)  # Increased weight (was 25% of 75%)
+
+    if not components:
+        return None
+
+    total_weight = sum(weights)
+    weighted_sum = sum(c * w for c, w in zip(components, weights))
+
+    return weighted_sum / total_weight
+
+
 def run_monte_carlo_significance(
     stocks: Optional[List[str]] = None,
-    num_simulations: int = 1000,
+    num_simulations: int = 500,
     top_n: int = 20,
     return_period_days: int = 90,
     data_years: int = 3,
@@ -566,17 +607,22 @@ def run_monte_carlo_significance(
     progress_callback: Optional[callable] = None,
 ) -> Dict:
     """
-    Monte Carlo test for statistical significance.
+    Monte Carlo test for statistical significance using multiple historical periods.
+
+    This test avoids forward-looking bias by:
+    1. Testing across multiple historical time windows (not just the most recent)
+    2. Using only price-based technical scores (no fundamentals that could leak future info)
+    3. Comparing strategy vs random selection at each historical point
 
     Compares the actual strategy returns to randomly selected portfolios.
     If the strategy outperforms >95% of random portfolios, it's significant.
 
     Args:
         stocks: Universe of stocks
-        num_simulations: Number of random portfolios to generate
+        num_simulations: Number of random portfolios per time window
         top_n: Number of stocks in each portfolio
-        return_period_days: Days to measure returns
-        data_years: Years of historical data to fetch (1-10)
+        return_period_days: Days to measure returns (also used as window spacing)
+        data_years: Years of historical data to test across (1-10)
         max_workers: Parallel workers
         progress_callback: Progress callback
 
@@ -584,71 +630,164 @@ def run_monte_carlo_significance(
         Dict with significance test results
     """
     if stocks is None:
-        stocks = COMPOSITE_STOCK_LIST[:100]
+        stocks = COMPOSITE_STOCK_LIST[:150]  # Match portfolio simulation universe
 
     data_years = min(max(data_years, 1), 10)  # Clamp to 1-10 years
 
-    cache_key = f"monte_carlo:{len(stocks)}:{num_simulations}:{top_n}:{data_years}y"
+    cache_key = f"monte_carlo_v2:{len(stocks)}:{num_simulations}:{top_n}:{return_period_days}:{data_years}y"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    # Fetch current data
     if progress_callback:
-        progress_callback(0, 100, "Fetching stock data...")
+        progress_callback(0, 100, "Fetching historical data...")
 
-    stock_data = []
+    # Fetch all price data upfront
+    all_prices = {}
 
-    def fetch_stock(ticker):
+    def fetch_prices(ticker):
         prices = _get_historical_prices(ticker, years=data_years)
-        fundamentals = fetch_fundamental_data(ticker)
-        if prices and len(prices) > return_period_days:
-            dates = sorted(prices.keys())
-            current_price = prices[dates[-1]]
-            past_price = prices[dates[-return_period_days]] if len(dates) > return_period_days else None
-
-            if past_price and past_price > 0:
-                ret = ((current_price - past_price) / past_price) * 100
-                score = _calculate_point_in_time_score(
-                    ticker, prices, dates[-return_period_days], fundamentals
-                )
-                return {
-                    'ticker': ticker,
-                    'return': ret,
-                    'score': score,
-                }
+        if prices and len(prices) > return_period_days * 2:
+            return ticker, prices
         return None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = list(executor.map(fetch_stock, stocks))
-        stock_data = [f for f in futures if f is not None and f['score'] is not None]
+        results = list(executor.map(fetch_prices, stocks))
+        for r in results:
+            if r is not None:
+                all_prices[r[0]] = r[1]
 
-    if len(stock_data) < top_n * 2:
-        return {"error": f"Insufficient data. Only {len(stock_data)} stocks available."}
+    if len(all_prices) < top_n * 2:
+        return {"error": f"Insufficient data. Only {len(all_prices)} stocks available."}
 
     if progress_callback:
-        progress_callback(50, 100, "Running Monte Carlo simulation...")
+        progress_callback(20, 100, "Identifying test windows...")
 
-    # Calculate actual strategy return (top N by score)
-    stock_data.sort(key=lambda x: x['score'], reverse=True)
-    strategy_stocks = stock_data[:top_n]
-    strategy_return = np.mean([s['return'] for s in strategy_stocks])
+    # Find common date range across all stocks
+    all_date_sets = [set(prices.keys()) for prices in all_prices.values()]
+    common_dates = sorted(set.intersection(*all_date_sets))
 
-    # Run random simulations
-    random_returns = []
-    for i in range(num_simulations):
-        random_selection = random.sample(stock_data, top_n)
-        random_return = np.mean([s['return'] for s in random_selection])
-        random_returns.append(random_return)
+    if len(common_dates) < return_period_days * 3:
+        return {"error": f"Insufficient common dates. Only {len(common_dates)} days overlap."}
 
-        if progress_callback and i % 100 == 0:
-            progress_callback(50 + (i / num_simulations) * 50, 100, f"Simulation {i}/{num_simulations}")
+    # Create test windows: every return_period_days, going back from most recent
+    # Each window: score stocks at window_start, measure returns to window_end
+    test_windows = []
+    window_spacing = return_period_days  # Non-overlapping windows
 
-    # Calculate percentile
-    percentile = sum(1 for r in random_returns if strategy_return > r) / num_simulations * 100
+    # Start from the earliest possible window and move forward
+    # This ensures we have enough history for scoring at each window start
+    min_history_needed = 252  # Need 1 year of history for momentum calculation
 
-    # Calculate p-value (one-tailed)
-    p_value = 1 - (percentile / 100)
+    i = min_history_needed
+    while i + return_period_days < len(common_dates):
+        window_start_idx = i
+        window_end_idx = i + return_period_days
+        test_windows.append({
+            'start_date': common_dates[window_start_idx],
+            'end_date': common_dates[window_end_idx],
+            'start_idx': window_start_idx,
+            'end_idx': window_end_idx,
+        })
+        i += window_spacing
+
+    if len(test_windows) < 4:
+        return {"error": f"Insufficient test windows. Only {len(test_windows)} windows available."}
+
+    if progress_callback:
+        progress_callback(30, 100, f"Testing {len(test_windows)} historical windows...")
+
+    # Run the test across all windows
+    all_strategy_returns = []
+    all_random_returns = []
+    window_results = []
+
+    for w_idx, window in enumerate(test_windows):
+        if progress_callback:
+            pct = 30 + (w_idx / len(test_windows)) * 60
+            progress_callback(pct, 100, f"Testing window {w_idx + 1}/{len(test_windows)}...")
+
+        # Score all stocks as of window start using ONLY technical indicators
+        # This is truly point-in-time: we only use price data available at start_date
+        stock_scores = []
+        for ticker, prices in all_prices.items():
+            dates = sorted(prices.keys())
+
+            # Ensure we have the exact dates for this window
+            if window['start_date'] not in prices or window['end_date'] not in prices:
+                continue
+
+            start_price = prices[window['start_date']]
+            end_price = prices[window['end_date']]
+
+            if start_price <= 0:
+                continue
+
+            # Calculate return over the window
+            ret = ((end_price - start_price) / start_price) * 100
+
+            # Calculate score using ONLY data available at window start (no fundamentals!)
+            score = _calculate_technical_only_score(ticker, prices, window['start_date'])
+
+            if score is not None:
+                stock_scores.append({
+                    'ticker': ticker,
+                    'score': score,
+                    'return': ret,
+                })
+
+        if len(stock_scores) < top_n * 2:
+            continue  # Skip this window if insufficient data
+
+        # Strategy: pick top N by score
+        stock_scores.sort(key=lambda x: x['score'], reverse=True)
+        strategy_stocks = stock_scores[:top_n]
+        strategy_return = np.mean([s['return'] for s in strategy_stocks])
+        all_strategy_returns.append(strategy_return)
+
+        # Random: sample multiple random portfolios for this window
+        window_random_returns = []
+        sims_per_window = max(50, num_simulations // len(test_windows))
+        for _ in range(sims_per_window):
+            random_selection = random.sample(stock_scores, top_n)
+            random_return = np.mean([s['return'] for s in random_selection])
+            window_random_returns.append(random_return)
+            all_random_returns.append(random_return)
+
+        window_results.append({
+            'period': f"{window['start_date']} to {window['end_date']}",
+            'strategy_return': round(strategy_return, 2),
+            'random_mean': round(np.mean(window_random_returns), 2),
+            'beat_random': strategy_return > np.mean(window_random_returns),
+            'top_picks': [s['ticker'] for s in strategy_stocks[:3]],
+        })
+
+    if len(all_strategy_returns) < 4:
+        return {"error": f"Insufficient valid windows. Only {len(all_strategy_returns)} completed."}
+
+    if progress_callback:
+        progress_callback(95, 100, "Calculating statistics...")
+
+    # Aggregate results across all windows
+    avg_strategy_return = np.mean(all_strategy_returns)
+    avg_random_return = np.mean(all_random_returns)
+
+    # Calculate how often strategy beat random
+    windows_beat = sum(1 for w in window_results if w['beat_random'])
+    win_rate = windows_beat / len(window_results) * 100
+
+    # Calculate percentile: what % of random portfolios did strategy beat?
+    percentile = sum(1 for r in all_random_returns if avg_strategy_return > r) / len(all_random_returns) * 100
+
+    # Calculate p-value using t-test for paired comparison
+    # Compare each window's strategy return to that window's random mean
+    strategy_vs_random_diffs = [
+        w['strategy_return'] - w['random_mean'] for w in window_results
+    ]
+
+    # One-sample t-test: is the mean difference > 0?
+    t_stat, p_value_ttest = stats.ttest_1samp(strategy_vs_random_diffs, 0)
+    p_value = p_value_ttest / 2 if t_stat > 0 else 1 - p_value_ttest / 2  # One-tailed
 
     # Determine significance
     if p_value < 0.01:
@@ -665,35 +804,39 @@ def run_monte_carlo_significance(
         significance_detail = "Cannot distinguish from random stock selection"
 
     result = {
-        "test_type": "monte_carlo_significance",
-        "stocks_analyzed": len(stock_data),
+        "test_type": "monte_carlo_significance_v2",
+        "methodology": "Multi-period point-in-time test (no forward-looking bias)",
+        "stocks_analyzed": len(all_prices),
         "portfolio_size": top_n,
-        "return_period": f"{return_period_days} days",
-        "num_simulations": num_simulations,
+        "test_windows": len(window_results),
+        "return_period": f"{return_period_days} days per window",
+        "total_simulations": len(all_random_returns),
         "significance": significance,
         "significance_detail": significance_detail,
         "results": {
-            "strategy_return": round(strategy_return, 2),
-            "random_mean_return": round(np.mean(random_returns), 2),
-            "random_std_return": round(np.std(random_returns), 2),
+            "strategy_avg_return": round(avg_strategy_return, 2),
+            "random_avg_return": round(avg_random_return, 2),
+            "strategy_std": round(np.std(all_strategy_returns), 2),
+            "windows_beat_random": f"{windows_beat}/{len(window_results)}",
+            "win_rate": round(win_rate, 1),
             "percentile": round(percentile, 1),
             "p_value": round(p_value, 4),
+            "t_statistic": round(t_stat, 3),
         },
         "distribution": {
-            "random_5th_percentile": round(np.percentile(random_returns, 5), 2),
-            "random_25th_percentile": round(np.percentile(random_returns, 25), 2),
-            "random_median": round(np.median(random_returns), 2),
-            "random_75th_percentile": round(np.percentile(random_returns, 75), 2),
-            "random_95th_percentile": round(np.percentile(random_returns, 95), 2),
+            "strategy_min": round(min(all_strategy_returns), 2),
+            "strategy_max": round(max(all_strategy_returns), 2),
+            "random_5th_percentile": round(np.percentile(all_random_returns, 5), 2),
+            "random_median": round(np.median(all_random_returns), 2),
+            "random_95th_percentile": round(np.percentile(all_random_returns, 95), 2),
         },
-        "strategy_stocks": [
-            {"ticker": s['ticker'], "score": round(s['score'], 1), "return": round(s['return'], 1)}
-            for s in strategy_stocks[:5]
-        ],
+        "window_details": window_results[-5:],  # Show last 5 windows
         "interpretation": [
-            f"Strategy return of {strategy_return:.1f}% vs random average of {np.mean(random_returns):.1f}%",
-            f"Strategy beats {percentile:.0f}% of random portfolios",
-            f"P-value: {p_value:.3f} (lower = more significant, <0.05 is standard threshold)",
+            f"Tested {len(window_results)} historical {return_period_days}-day periods",
+            f"Strategy avg return: {avg_strategy_return:.1f}% vs random avg: {avg_random_return:.1f}%",
+            f"Strategy beat random in {windows_beat}/{len(window_results)} windows ({win_rate:.0f}%)",
+            f"P-value: {p_value:.3f} (t-test, lower = more significant, <0.05 is threshold)",
+            "Note: Uses only technical indicators (no fundamental forward-bias)",
         ],
     }
 
