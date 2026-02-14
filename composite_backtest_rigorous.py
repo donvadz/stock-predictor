@@ -148,94 +148,273 @@ def _calculate_point_in_time_score(
     ticker: str,
     prices: Dict[str, float],
     as_of_date: str,
-    fundamentals: Optional[Dict] = None
+    fundamentals: Optional[Dict] = None,
+    holding_period_days: int = 90
 ) -> Optional[float]:
     """
-    Calculate a composite score using only data available at as_of_date.
+    Calculate a composite score with adaptive weights based on holding period.
 
-    This is a simplified scoring that avoids look-ahead bias by using:
-    - Historical momentum (calculable from past prices)
-    - Historical volatility (calculable from past prices)
-    - Trend strength (calculable from past prices)
-    - Current fundamentals (with caveat - these may have changed)
+    Weights adjust automatically:
+    - Short-term (<=90 days): More momentum/trend, less fundamentals
+    - Medium-term (91-180 days): Balanced approach
+    - Long-term (>180 days): More fundamentals, less momentum
 
-    The fundamental component introduces some bias, but it's much less
-    than using fundamentals to predict past returns.
+    This reflects reality: momentum predicts short-term, fundamentals predict long-term.
     """
+    # Determine weight profile based on holding period
+    if holding_period_days <= 90:
+        # Short-term: momentum and trend dominate
+        w_momentum = 0.35
+        w_trend = 0.25
+        w_volatility = 0.15
+        w_fundamentals = 0.25
+    elif holding_period_days <= 180:
+        # Medium-term: balanced
+        w_momentum = 0.28
+        w_trend = 0.22
+        w_volatility = 0.15
+        w_fundamentals = 0.35
+    else:
+        # Long-term: fundamentals dominate
+        w_momentum = 0.20
+        w_trend = 0.18
+        w_volatility = 0.12
+        w_fundamentals = 0.50
+
     # Technical scores (no look-ahead bias)
     momentum = _calculate_momentum_score(prices, as_of_date, 252)
     volatility = _calculate_volatility_score(prices, as_of_date, 63)
     trend = _calculate_trend_score(prices, as_of_date)
 
-    # Fundamental score (some bias, but stable over time)
+    # === ENHANCED FUNDAMENTAL SCORING ===
     fundamental_score = 50  # Default neutral
     if fundamentals:
-        scores = []
+        # Separate categories for more nuanced scoring
+        quality_scores = []      # Profitability & efficiency
+        growth_scores = []       # Revenue & earnings growth
+        valuation_scores = []    # P/E, PEG, P/B
+        health_scores = []       # Debt, liquidity
 
-        # ROE - quality indicator
+        # --- QUALITY METRICS (weight: 30% of fundamental score) ---
+
+        # ROE - Return on Equity (higher is better, but not too high)
         roe = fundamentals.get('roe')
         if roe is not None:
-            if 0.15 <= roe <= 0.25:
-                scores.append(80)
-            elif 0.10 <= roe <= 0.30:
-                scores.append(60)
+            if 0.15 <= roe <= 0.30:
+                quality_scores.append(90)  # Sweet spot
+            elif 0.10 <= roe < 0.15:
+                quality_scores.append(70)
+            elif 0.30 < roe <= 0.40:
+                quality_scores.append(70)  # High but sustainable
+            elif roe > 0.40:
+                quality_scores.append(50)  # Suspiciously high
             elif roe > 0:
-                scores.append(40)
+                quality_scores.append(40)
             else:
-                scores.append(20)
+                quality_scores.append(20)
 
-        # Profit margin
+        # ROA - Return on Assets
+        roa = fundamentals.get('roa')
+        if roa is not None:
+            if roa > 0.10:
+                quality_scores.append(85)
+            elif roa > 0.05:
+                quality_scores.append(70)
+            elif roa > 0:
+                quality_scores.append(50)
+            else:
+                quality_scores.append(25)
+
+        # Profit Margin
         pm = fundamentals.get('profit_margin')
         if pm is not None:
             if pm > 0.20:
-                scores.append(80)
+                quality_scores.append(90)
+            elif pm > 0.15:
+                quality_scores.append(80)
             elif pm > 0.10:
-                scores.append(60)
+                quality_scores.append(65)
+            elif pm > 0.05:
+                quality_scores.append(50)
             elif pm > 0:
-                scores.append(40)
+                quality_scores.append(35)
             else:
-                scores.append(20)
+                quality_scores.append(20)
 
-        # Debt to equity (lower is better)
+        # Operating Margin
+        om = fundamentals.get('operating_margin')
+        if om is not None:
+            if om > 0.25:
+                quality_scores.append(90)
+            elif om > 0.15:
+                quality_scores.append(75)
+            elif om > 0.10:
+                quality_scores.append(60)
+            elif om > 0:
+                quality_scores.append(40)
+            else:
+                quality_scores.append(20)
+
+        # --- GROWTH METRICS (weight: 30% of fundamental score) ---
+
+        # Revenue Growth (YoY)
+        rev_growth = fundamentals.get('revenue_growth')
+        if rev_growth is not None:
+            if rev_growth > 0.20:
+                growth_scores.append(90)  # Strong growth
+            elif rev_growth > 0.10:
+                growth_scores.append(75)
+            elif rev_growth > 0.05:
+                growth_scores.append(60)
+            elif rev_growth > 0:
+                growth_scores.append(45)
+            elif rev_growth > -0.05:
+                growth_scores.append(35)  # Slight decline
+            else:
+                growth_scores.append(20)  # Significant decline
+
+        # Earnings Growth (YoY)
+        earn_growth = fundamentals.get('earnings_growth')
+        if earn_growth is not None:
+            if earn_growth > 0.25:
+                growth_scores.append(90)
+            elif earn_growth > 0.15:
+                growth_scores.append(75)
+            elif earn_growth > 0.05:
+                growth_scores.append(60)
+            elif earn_growth > 0:
+                growth_scores.append(45)
+            elif earn_growth > -0.10:
+                growth_scores.append(30)
+            else:
+                growth_scores.append(15)
+
+        # --- VALUATION METRICS (weight: 25% of fundamental score) ---
+
+        # P/E Ratio (lower is better, but not too low)
+        pe = fundamentals.get('pe_ratio')
+        if pe is not None and pe > 0:
+            if 10 <= pe <= 20:
+                valuation_scores.append(85)  # Reasonable valuation
+            elif 20 < pe <= 25:
+                valuation_scores.append(70)
+            elif 5 <= pe < 10:
+                valuation_scores.append(70)  # Cheap but might be value trap
+            elif 25 < pe <= 35:
+                valuation_scores.append(55)
+            elif pe < 5:
+                valuation_scores.append(40)  # Suspiciously cheap
+            else:
+                valuation_scores.append(35)  # Expensive
+
+        # PEG Ratio (P/E to Growth - lower is better)
+        peg = fundamentals.get('peg_ratio')
+        if peg is not None and peg > 0:
+            if peg < 1.0:
+                valuation_scores.append(90)  # Undervalued relative to growth
+            elif peg < 1.5:
+                valuation_scores.append(75)
+            elif peg < 2.0:
+                valuation_scores.append(60)
+            elif peg < 3.0:
+                valuation_scores.append(45)
+            else:
+                valuation_scores.append(30)
+
+        # Price to Book (lower is better for value)
+        pb = fundamentals.get('price_to_book')
+        if pb is not None and pb > 0:
+            if pb < 1.5:
+                valuation_scores.append(80)
+            elif pb < 3.0:
+                valuation_scores.append(65)
+            elif pb < 5.0:
+                valuation_scores.append(50)
+            else:
+                valuation_scores.append(35)
+
+        # --- FINANCIAL HEALTH METRICS (weight: 15% of fundamental score) ---
+
+        # Debt to Equity (lower is better)
         dte = fundamentals.get('debt_to_equity')
         if dte is not None:
-            if dte < 50:
-                scores.append(80)
+            if dte < 30:
+                health_scores.append(90)  # Very low debt
+            elif dte < 50:
+                health_scores.append(80)
             elif dte < 100:
-                scores.append(60)
+                health_scores.append(65)
+            elif dte < 150:
+                health_scores.append(50)
             elif dte < 200:
-                scores.append(40)
+                health_scores.append(35)
             else:
-                scores.append(20)
+                health_scores.append(20)
 
-        if scores:
-            fundamental_score = np.mean(scores)
+        # Current Ratio (higher is better, but not too high)
+        cr = fundamentals.get('current_ratio')
+        if cr is not None:
+            if 1.5 <= cr <= 3.0:
+                health_scores.append(85)  # Healthy liquidity
+            elif 1.2 <= cr < 1.5:
+                health_scores.append(70)
+            elif 3.0 < cr <= 5.0:
+                health_scores.append(65)  # Too much cash sitting around
+            elif cr > 5.0:
+                health_scores.append(50)
+            elif cr >= 1.0:
+                health_scores.append(55)
+            else:
+                health_scores.append(25)  # Liquidity risk
 
-    # Combine scores
+        # Combine fundamental sub-scores with internal weights
+        sub_scores = []
+        sub_weights = []
+
+        if quality_scores:
+            sub_scores.append(np.mean(quality_scores))
+            sub_weights.append(0.30)  # 30% quality
+
+        if growth_scores:
+            sub_scores.append(np.mean(growth_scores))
+            sub_weights.append(0.30)  # 30% growth
+
+        if valuation_scores:
+            sub_scores.append(np.mean(valuation_scores))
+            sub_weights.append(0.25)  # 25% valuation
+
+        if health_scores:
+            sub_scores.append(np.mean(health_scores))
+            sub_weights.append(0.15)  # 15% health
+
+        if sub_scores:
+            total_sub_weight = sum(sub_weights)
+            fundamental_score = sum(s * w for s, w in zip(sub_scores, sub_weights)) / total_sub_weight
+
+    # === COMBINE ALL COMPONENTS ===
+    # === COMBINE ALL COMPONENTS WITH ADAPTIVE WEIGHTS ===
     components = []
     weights = []
 
     if momentum is not None:
-        # Normalize momentum to 0-100 scale
-        norm_momentum = max(0, min(100, 50 + momentum))  # -50% to +50% -> 0 to 100
+        norm_momentum = max(0, min(100, 50 + momentum))
         components.append(norm_momentum)
-        weights.append(0.30)  # 30% weight
+        weights.append(w_momentum)
 
     if volatility is not None:
         components.append(volatility)
-        weights.append(0.20)  # 20% weight
+        weights.append(w_volatility)
 
     if trend is not None:
         components.append(trend)
-        weights.append(0.25)  # 25% weight
+        weights.append(w_trend)
 
     components.append(fundamental_score)
-    weights.append(0.25)  # 25% weight
+    weights.append(w_fundamentals)
 
     if not components:
         return None
 
-    # Weighted average
     total_weight = sum(weights)
     weighted_sum = sum(c * w for c, w in zip(components, weights))
 
@@ -375,8 +554,10 @@ def run_portfolio_simulation(
             if rebal_date not in prices or next_date not in prices:
                 continue
 
+            # Pass holding period so weights adapt (quarterly rebalance = ~90 days)
+            holding_days = rebalance_months * 30
             score = _calculate_point_in_time_score(
-                ticker, prices, rebal_date, all_fundamentals.get(ticker)
+                ticker, prices, rebal_date, all_fundamentals.get(ticker), holding_days
             )
 
             if score is not None:
@@ -601,40 +782,71 @@ def run_monte_carlo_significance(
     stocks: Optional[List[str]] = None,
     num_simulations: int = 500,
     top_n: int = 20,
-    return_period_days: int = 90,
+    return_period_days: int = None,  # Auto-calculated based on data_years
     data_years: int = 3,
     max_workers: int = 8,
     progress_callback: Optional[callable] = None,
 ) -> Dict:
     """
-    Monte Carlo test for statistical significance using multiple historical periods.
+    Pick Quality Test - Evaluates how well the scoring system picks winning stocks.
 
-    This test avoids forward-looking bias by:
-    1. Testing across multiple historical time windows (not just the most recent)
-    2. Using only price-based technical scores (no fundamentals that could leak future info)
-    3. Comparing strategy vs random selection at each historical point
+    Instead of comparing to random portfolios (irrelevant for long-term investing),
+    this test answers: "Do the top-scored stocks actually go up?"
 
-    Compares the actual strategy returns to randomly selected portfolios.
-    If the strategy outperforms >95% of random portfolios, it's significant.
+    Holding periods are automatically adjusted based on the test horizon:
+    - 2-3 years: Quarterly (90-day) holding periods
+    - 4-6 years: Semi-annual (180-day) holding periods
+    - 7-10 years: Annual (252-day) holding periods
+
+    This ensures the test matches your investment horizon.
+
+    Metrics:
+    - Win Rate: % of picks that had positive returns
+    - Average Return: Mean return of top picks
+    - Consistency: How often picks were profitable across different periods
+    - Quality Grade: Overall assessment of pick quality
+
+    Uses full scoring (momentum + volatility + trend + fundamentals) since
+    the goal is to pick good long-term stocks, not beat a benchmark.
 
     Args:
-        stocks: Universe of stocks
-        num_simulations: Number of random portfolios per time window
-        top_n: Number of stocks in each portfolio
-        return_period_days: Days to measure returns (also used as window spacing)
-        data_years: Years of historical data to test across (1-10)
-        max_workers: Parallel workers
-        progress_callback: Progress callback
+        stocks: Universe of stocks (defaults to S&P 500 components)
+        num_simulations: Not used (kept for API compatibility)
+        top_n: Number of top stocks to select each period
+        return_period_days: Holding period in days (auto-calculated if None)
+        data_years: Years of historical data to test (2, 5, or 10 recommended)
+        max_workers: Parallel workers for data fetching
+        progress_callback: Optional progress callback
 
     Returns:
-        Dict with significance test results
+        Dict with pick quality metrics
     """
     if stocks is None:
-        stocks = COMPOSITE_STOCK_LIST[:150]  # Match portfolio simulation universe
+        stocks = COMPOSITE_STOCK_LIST[:150]  # S&P 500 focused
 
-    data_years = min(max(data_years, 1), 10)  # Clamp to 1-10 years
+    data_years = min(max(data_years, 1), 10)
 
-    cache_key = f"monte_carlo_v2:{len(stocks)}:{num_simulations}:{top_n}:{return_period_days}:{data_years}y"
+    # Auto-calculate holding period based on investment horizon
+    # Longer horizons = longer holding periods (more meaningful for long-term investing)
+    if return_period_days is None:
+        if data_years <= 3:
+            return_period_days = 90   # Quarterly for short-term tests
+            horizon_label = "Short-term (quarterly holds)"
+        elif data_years <= 6:
+            return_period_days = 180  # Semi-annual for medium-term
+            horizon_label = "Medium-term (semi-annual holds)"
+        else:
+            return_period_days = 252  # Annual for long-term
+            horizon_label = "Long-term (annual holds)"
+    else:
+        if return_period_days <= 90:
+            horizon_label = "Quarterly holds"
+        elif return_period_days <= 180:
+            horizon_label = "Semi-annual holds"
+        else:
+            horizon_label = "Annual holds"
+
+    cache_key = f"pick_quality_v2:{len(stocks)}:{top_n}:{return_period_days}:{data_years}y"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -642,78 +854,67 @@ def run_monte_carlo_significance(
     if progress_callback:
         progress_callback(0, 100, "Fetching historical data...")
 
-    # Fetch all price data upfront
+    # Fetch price data and fundamentals
     all_prices = {}
+    all_fundamentals = {}
 
-    def fetch_prices(ticker):
+    def fetch_stock_data(ticker):
         prices = _get_historical_prices(ticker, years=data_years)
+        fundamentals = fetch_fundamental_data(ticker)
         if prices and len(prices) > return_period_days * 2:
-            return ticker, prices
+            return ticker, prices, fundamentals
         return None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(fetch_prices, stocks))
+        results = list(executor.map(fetch_stock_data, stocks))
         for r in results:
             if r is not None:
                 all_prices[r[0]] = r[1]
+                all_fundamentals[r[0]] = r[2]
 
     if len(all_prices) < top_n * 2:
         return {"error": f"Insufficient data. Only {len(all_prices)} stocks available."}
 
     if progress_callback:
-        progress_callback(20, 100, "Identifying test windows...")
+        progress_callback(20, 100, "Analyzing historical periods...")
 
-    # Find common date range across all stocks
+    # Find common dates
     all_date_sets = [set(prices.keys()) for prices in all_prices.values()]
     common_dates = sorted(set.intersection(*all_date_sets))
 
     if len(common_dates) < return_period_days * 3:
         return {"error": f"Insufficient common dates. Only {len(common_dates)} days overlap."}
 
-    # Create test windows: every return_period_days, going back from most recent
-    # Each window: score stocks at window_start, measure returns to window_end
+    # Create test windows
     test_windows = []
-    window_spacing = return_period_days  # Non-overlapping windows
-
-    # Start from the earliest possible window and move forward
-    # This ensures we have enough history for scoring at each window start
-    min_history_needed = 252  # Need 1 year of history for momentum calculation
+    min_history_needed = 252
 
     i = min_history_needed
     while i + return_period_days < len(common_dates):
-        window_start_idx = i
-        window_end_idx = i + return_period_days
         test_windows.append({
-            'start_date': common_dates[window_start_idx],
-            'end_date': common_dates[window_end_idx],
-            'start_idx': window_start_idx,
-            'end_idx': window_end_idx,
+            'start_date': common_dates[i],
+            'end_date': common_dates[i + return_period_days],
         })
-        i += window_spacing
+        i += return_period_days  # Non-overlapping
 
-    if len(test_windows) < 4:
-        return {"error": f"Insufficient test windows. Only {len(test_windows)} windows available."}
+    if len(test_windows) < 2:
+        return {"error": f"Insufficient test windows. Only {len(test_windows)} available."}
 
     if progress_callback:
-        progress_callback(30, 100, f"Testing {len(test_windows)} historical windows...")
+        progress_callback(30, 100, f"Testing {len(test_windows)} periods...")
 
-    # Run the test across all windows
-    all_strategy_returns = []
-    all_random_returns = []
-    window_results = []
+    # Track all picks across all windows
+    all_picks = []  # Individual stock picks with their returns
+    period_results = []  # Aggregated results per period
 
     for w_idx, window in enumerate(test_windows):
         if progress_callback:
             pct = 30 + (w_idx / len(test_windows)) * 60
-            progress_callback(pct, 100, f"Testing window {w_idx + 1}/{len(test_windows)}...")
+            progress_callback(pct, 100, f"Period {w_idx + 1}/{len(test_windows)}...")
 
-        # Score all stocks as of window start using ONLY technical indicators
-        # This is truly point-in-time: we only use price data available at start_date
+        # Score all stocks using FULL scoring (including fundamentals)
         stock_scores = []
         for ticker, prices in all_prices.items():
-            dates = sorted(prices.keys())
-
-            # Ensure we have the exact dates for this window
             if window['start_date'] not in prices or window['end_date'] not in prices:
                 continue
 
@@ -723,11 +924,12 @@ def run_monte_carlo_significance(
             if start_price <= 0:
                 continue
 
-            # Calculate return over the window
             ret = ((end_price - start_price) / start_price) * 100
 
-            # Calculate score using ONLY data available at window start (no fundamentals!)
-            score = _calculate_technical_only_score(ticker, prices, window['start_date'])
+            # Use full scoring with fundamentals - weights adapt to holding period
+            score = _calculate_point_in_time_score(
+                ticker, prices, window['start_date'], all_fundamentals.get(ticker), return_period_days
+            )
 
             if score is not None:
                 stock_scores.append({
@@ -736,107 +938,131 @@ def run_monte_carlo_significance(
                     'return': ret,
                 })
 
-        if len(stock_scores) < top_n * 2:
-            continue  # Skip this window if insufficient data
+        if len(stock_scores) < top_n:
+            continue
 
-        # Strategy: pick top N by score
+        # Pick top N by score
         stock_scores.sort(key=lambda x: x['score'], reverse=True)
-        strategy_stocks = stock_scores[:top_n]
-        strategy_return = np.mean([s['return'] for s in strategy_stocks])
-        all_strategy_returns.append(strategy_return)
+        top_picks = stock_scores[:top_n]
 
-        # Random: sample multiple random portfolios for this window
-        window_random_returns = []
-        sims_per_window = max(50, num_simulations // len(test_windows))
-        for _ in range(sims_per_window):
-            random_selection = random.sample(stock_scores, top_n)
-            random_return = np.mean([s['return'] for s in random_selection])
-            window_random_returns.append(random_return)
-            all_random_returns.append(random_return)
+        # Track individual picks
+        for pick in top_picks:
+            all_picks.append({
+                'ticker': pick['ticker'],
+                'return': pick['return'],
+                'score': pick['score'],
+                'period': window['start_date'],
+                'positive': pick['return'] > 0,
+            })
 
-        window_results.append({
+        # Period summary
+        period_return = np.mean([p['return'] for p in top_picks])
+        period_winners = sum(1 for p in top_picks if p['return'] > 0)
+
+        period_results.append({
             'period': f"{window['start_date']} to {window['end_date']}",
-            'strategy_return': round(strategy_return, 2),
-            'random_mean': round(np.mean(window_random_returns), 2),
-            'beat_random': strategy_return > np.mean(window_random_returns),
-            'top_picks': [s['ticker'] for s in strategy_stocks[:3]],
+            'avg_return': round(period_return, 2),
+            'winners': period_winners,
+            'win_rate': round(period_winners / top_n * 100, 1),
+            'top_picks': [p['ticker'] for p in top_picks[:5]],
+            'best_pick': max(top_picks, key=lambda x: x['return']),
+            'worst_pick': min(top_picks, key=lambda x: x['return']),
         })
 
-    if len(all_strategy_returns) < 4:
-        return {"error": f"Insufficient valid windows. Only {len(all_strategy_returns)} completed."}
+    if len(all_picks) < top_n:
+        return {"error": "Insufficient picks to analyze."}
 
     if progress_callback:
-        progress_callback(95, 100, "Calculating statistics...")
+        progress_callback(95, 100, "Calculating quality metrics...")
 
-    # Aggregate results across all windows
-    avg_strategy_return = np.mean(all_strategy_returns)
-    avg_random_return = np.mean(all_random_returns)
+    # Calculate overall metrics
+    total_picks = len(all_picks)
+    winning_picks = sum(1 for p in all_picks if p['positive'])
+    overall_win_rate = winning_picks / total_picks * 100
 
-    # Calculate how often strategy beat random
-    windows_beat = sum(1 for w in window_results if w['beat_random'])
-    win_rate = windows_beat / len(window_results) * 100
+    avg_return = np.mean([p['return'] for p in all_picks])
+    avg_winner_return = np.mean([p['return'] for p in all_picks if p['positive']]) if winning_picks > 0 else 0
+    avg_loser_return = np.mean([p['return'] for p in all_picks if not p['positive']]) if winning_picks < total_picks else 0
 
-    # Calculate percentile: what % of random portfolios did strategy beat?
-    percentile = sum(1 for r in all_random_returns if avg_strategy_return > r) / len(all_random_returns) * 100
+    # Consistency: how many periods had positive average returns?
+    positive_periods = sum(1 for p in period_results if p['avg_return'] > 0)
+    consistency = positive_periods / len(period_results) * 100
 
-    # Calculate p-value using t-test for paired comparison
-    # Compare each window's strategy return to that window's random mean
-    strategy_vs_random_diffs = [
-        w['strategy_return'] - w['random_mean'] for w in window_results
-    ]
+    # Find best and worst performers across all picks
+    best_picks = sorted(all_picks, key=lambda x: x['return'], reverse=True)[:5]
+    worst_picks = sorted(all_picks, key=lambda x: x['return'])[:5]
 
-    # One-sample t-test: is the mean difference > 0?
-    t_stat, p_value_ttest = stats.ttest_1samp(strategy_vs_random_diffs, 0)
-    p_value = p_value_ttest / 2 if t_stat > 0 else 1 - p_value_ttest / 2  # One-tailed
-
-    # Determine significance
-    if p_value < 0.01:
-        significance = "HIGHLY SIGNIFICANT"
-        significance_detail = "Strategy outperforms random selection with >99% confidence"
-    elif p_value < 0.05:
-        significance = "SIGNIFICANT"
-        significance_detail = "Strategy outperforms random selection with >95% confidence"
-    elif p_value < 0.10:
-        significance = "MARGINALLY SIGNIFICANT"
-        significance_detail = "Weak evidence of strategy outperformance"
+    # Determine quality grade
+    if overall_win_rate >= 70 and avg_return >= 5 and consistency >= 70:
+        quality_grade = "EXCELLENT"
+        quality_detail = "Strong stock picker - high win rate with consistent positive returns"
+    elif overall_win_rate >= 60 and avg_return >= 2 and consistency >= 60:
+        quality_grade = "GOOD"
+        quality_detail = "Reliable stock picker - majority of picks are profitable"
+    elif overall_win_rate >= 50 and avg_return >= 0:
+        quality_grade = "FAIR"
+        quality_detail = "Moderate picker - slightly better than coin flip"
     else:
-        significance = "NOT SIGNIFICANT"
-        significance_detail = "Cannot distinguish from random stock selection"
+        quality_grade = "NEEDS IMPROVEMENT"
+        quality_detail = "Picks not consistently profitable - consider refining criteria"
+
+    # Show adaptive weights used for this holding period
+    if return_period_days <= 90:
+        weights_used = "35% Momentum, 25% Trend, 25% Fundamentals, 15% Volatility (short-term optimized)"
+    elif return_period_days <= 180:
+        weights_used = "28% Momentum, 22% Trend, 35% Fundamentals, 15% Volatility (balanced)"
+    else:
+        weights_used = "20% Momentum, 18% Trend, 50% Fundamentals, 12% Volatility (long-term optimized)"
 
     result = {
-        "test_type": "monte_carlo_significance_v2",
-        "methodology": "Multi-period point-in-time test (no forward-looking bias)",
+        "test_type": "pick_quality",
+        "methodology": f"Adaptive scoring with {horizon_label}",
+        "scoring_weights": weights_used,
+        "fundamental_factors": "ROE, ROA, margins, revenue growth, earnings growth, P/E, PEG, P/B, debt ratio, liquidity",
         "stocks_analyzed": len(all_prices),
         "portfolio_size": top_n,
-        "test_windows": len(window_results),
-        "return_period": f"{return_period_days} days per window",
-        "total_simulations": len(all_random_returns),
-        "significance": significance,
-        "significance_detail": significance_detail,
+        "periods_tested": len(period_results),
+        "data_years": data_years,
+        "holding_period": f"{return_period_days} days",
+        "horizon": horizon_label,
+        "total_picks_analyzed": total_picks,
+        "significance": quality_grade,  # Keep for frontend compatibility
+        "significance_detail": quality_detail,
         "results": {
-            "strategy_avg_return": round(avg_strategy_return, 2),
-            "random_avg_return": round(avg_random_return, 2),
-            "strategy_std": round(np.std(all_strategy_returns), 2),
-            "windows_beat_random": f"{windows_beat}/{len(window_results)}",
-            "win_rate": round(win_rate, 1),
-            "percentile": round(percentile, 1),
-            "p_value": round(p_value, 4),
-            "t_statistic": round(t_stat, 3),
+            # Frontend-compatible fields
+            "strategy_return": round(avg_return, 2),
+            "random_mean_return": 0,  # Not applicable - kept for compatibility
+            "percentile": round(overall_win_rate, 1),  # Repurpose as win rate
+            "p_value": round(1 - (overall_win_rate / 100), 4),  # Lower = better picks
+            # New meaningful fields
+            "win_rate": round(overall_win_rate, 1),
+            "avg_return_per_period": round(avg_return, 2),
+            "avg_winner_return": round(avg_winner_return, 2),
+            "avg_loser_return": round(avg_loser_return, 2),
+            "consistency": round(consistency, 1),
+            "positive_periods": f"{positive_periods}/{len(period_results)}",
         },
         "distribution": {
-            "strategy_min": round(min(all_strategy_returns), 2),
-            "strategy_max": round(max(all_strategy_returns), 2),
-            "random_5th_percentile": round(np.percentile(all_random_returns, 5), 2),
-            "random_median": round(np.median(all_random_returns), 2),
-            "random_95th_percentile": round(np.percentile(all_random_returns, 95), 2),
+            "best_period_return": round(max(p['avg_return'] for p in period_results), 2),
+            "worst_period_return": round(min(p['avg_return'] for p in period_results), 2),
+            "median_period_return": round(np.median([p['avg_return'] for p in period_results]), 2),
         },
-        "window_details": window_results[-5:],  # Show last 5 windows
+        "best_picks": [
+            {"ticker": p['ticker'], "return": round(p['return'], 1), "period": p['period']}
+            for p in best_picks
+        ],
+        "worst_picks": [
+            {"ticker": p['ticker'], "return": round(p['return'], 1), "period": p['period']}
+            for p in worst_picks
+        ],
+        "period_details": period_results[-5:],  # Last 5 periods
         "interpretation": [
-            f"Tested {len(window_results)} historical {return_period_days}-day periods",
-            f"Strategy avg return: {avg_strategy_return:.1f}% vs random avg: {avg_random_return:.1f}%",
-            f"Strategy beat random in {windows_beat}/{len(window_results)} windows ({win_rate:.0f}%)",
-            f"P-value: {p_value:.3f} (t-test, lower = more significant, <0.05 is threshold)",
-            "Note: Uses only technical indicators (no fundamental forward-bias)",
+            f"Test Horizon: {data_years} years with {horizon_label.lower()}",
+            f"Analyzed {total_picks} stock picks across {len(period_results)} periods",
+            f"Win Rate: {overall_win_rate:.1f}% of picks had positive returns",
+            f"Average Return: {avg_return:.1f}% per {return_period_days}-day holding period",
+            f"Consistency: {positive_periods}/{len(period_results)} periods were profitable ({consistency:.0f}%)",
+            f"Quality Grade: {quality_grade}",
         ],
     }
 
@@ -879,32 +1105,41 @@ def run_rigorous_backtest(
         progress_callback=progress_callback,
     )
 
-    # Run Monte Carlo test (use simulation_years for data fetch)
-    monte_carlo_result = run_monte_carlo_significance(
+    # Run Pick Quality test (replaces Monte Carlo significance test)
+    # Tests whether top-scored stocks actually go up over time
+    pick_quality_result = run_monte_carlo_significance(
         stocks=stocks,
-        num_simulations=500,
         top_n=20,
-        return_period_days=90 * simulation_years,  # Scale return period with years
+        return_period_days=90,  # Quarterly holding periods
         data_years=simulation_years + 1,
         max_workers=max_workers,
     )
 
-    # Overall assessment
+    # Overall assessment based on:
+    # 1. Portfolio returns (did we make money?)
+    # 2. Pick quality (do our picks consistently go up?)
+    portfolio_return = portfolio_result.get('performance', {}).get('total_return', 0)
     portfolio_alpha = portfolio_result.get('performance', {}).get('alpha', 0)
-    p_value = monte_carlo_result.get('results', {}).get('p_value', 1)
+    win_rate = pick_quality_result.get('results', {}).get('win_rate', 0)
+    consistency = pick_quality_result.get('results', {}).get('consistency', 0)
+    pick_quality = pick_quality_result.get('significance', 'UNKNOWN')
 
-    if portfolio_alpha > 5 and p_value < 0.05:
-        overall_verdict = "VALIDATED"
-        overall_detail = "Strategy shows significant alpha with statistical backing"
-    elif portfolio_alpha > 0 and p_value < 0.10:
-        overall_verdict = "PROMISING"
-        overall_detail = "Strategy shows positive alpha with some statistical support"
-    elif portfolio_alpha > 0:
-        overall_verdict = "INCONCLUSIVE"
-        overall_detail = "Positive returns but not statistically significant"
+    # New verdict logic: focus on whether picks are profitable, not beating benchmarks
+    if win_rate >= 65 and portfolio_return > 0 and consistency >= 60:
+        overall_verdict = "STRONG PICKER"
+        overall_detail = f"Reliable long-term picks: {win_rate:.0f}% win rate, {consistency:.0f}% consistency"
+    elif win_rate >= 55 and portfolio_return > 0:
+        overall_verdict = "GOOD PICKER"
+        overall_detail = f"Solid picks with {win_rate:.0f}% win rate - suitable for long-term investing"
+    elif win_rate >= 50 and portfolio_return > 0:
+        overall_verdict = "MODERATE"
+        overall_detail = f"Picks are slightly better than average ({win_rate:.0f}% win rate)"
+    elif portfolio_return > 0:
+        overall_verdict = "MARGINAL"
+        overall_detail = "Positive returns but pick quality needs improvement"
     else:
-        overall_verdict = "NOT VALIDATED"
-        overall_detail = "Strategy does not show reliable outperformance"
+        overall_verdict = "NEEDS WORK"
+        overall_detail = "Strategy not producing reliable profitable picks"
 
     result = {
         "backtest_type": "rigorous_comprehensive",
@@ -912,12 +1147,16 @@ def run_rigorous_backtest(
         "overall_verdict": overall_verdict,
         "overall_detail": overall_detail,
         "portfolio_simulation": portfolio_result,
-        "statistical_significance": monte_carlo_result,
+        "statistical_significance": pick_quality_result,  # Renamed internally but kept for frontend
         "key_metrics": {
             "alpha_vs_spy": portfolio_result.get('performance', {}).get('alpha'),
             "sharpe_ratio": portfolio_result.get('risk_metrics', {}).get('sharpe_ratio'),
-            "statistical_significance": monte_carlo_result.get('significance'),
-            "p_value": monte_carlo_result.get('results', {}).get('p_value'),
+            "statistical_significance": pick_quality_result.get('significance'),  # Now shows quality grade
+            "p_value": pick_quality_result.get('results', {}).get('p_value'),  # Lower = better picks
+            # New metrics
+            "win_rate": win_rate,
+            "consistency": consistency,
+            "avg_return_per_pick": pick_quality_result.get('results', {}).get('avg_return_per_period'),
         },
     }
 

@@ -149,8 +149,10 @@ function CompositeRanking() {
       </div>
       <h2>Fundamental Rankings</h2>
       <p className="card-description">
-        Data-driven composite scores for long-term investing. Combines Growth (30%),
-        Quality (30%), Financial Strength (20%), and Valuation (20%) metrics.
+        Data-driven composite scores with adaptive weights based on investment horizon.
+        {data?.methodology?.weight_profile && (
+          <span className="current-profile"> Currently using: <strong>{data.methodology.weight_profile}</strong></span>
+        )}
       </p>
 
       {/* Horizon Selector */}
@@ -526,18 +528,55 @@ function CompositeRanking() {
         </>
       )}
 
-      {/* Methodology */}
+      {/* Methodology - Dynamic based on horizon */}
       <div className="methodology-box">
         <h4>Scoring Methodology</h4>
-        <ul>
-          <li><strong>Growth (30%):</strong> Revenue growth, earnings growth, 52-week price momentum</li>
-          <li><strong>Quality (30%):</strong> ROE (15-25% ideal), ROA, profit margin, operating margin</li>
-          <li><strong>Financial Strength (20%):</strong> Low debt-to-equity, healthy current ratio, institutional support</li>
-          <li><strong>Valuation (20%):</strong> P/E vs sector median, PEG ratio, price-to-book</li>
-        </ul>
+        {data?.methodology ? (
+          <>
+            <div className="weight-profile">
+              <span className="profile-badge">{data.methodology.weight_profile}</span>
+              <span className="profile-desc">{data.methodology.description}</span>
+            </div>
+            <ul>
+              <li><strong>Growth ({data.methodology.growth_weight}):</strong> Revenue growth, earnings growth, price momentum</li>
+              <li><strong>Quality ({data.methodology.quality_weight}):</strong> ROE (15-25% ideal), ROA, profit margin, operating margin</li>
+              <li><strong>Financial Strength ({data.methodology.financial_strength_weight}):</strong> Low debt-to-equity, healthy current ratio</li>
+              <li><strong>Valuation ({data.methodology.valuation_weight}):</strong> P/E vs sector median, PEG ratio, price-to-book</li>
+            </ul>
+            {data.methodology.expected_returns && (
+              <div className="expected-returns-summary">
+                <h5>Expected Annual Returns by Grade</h5>
+                <div className="returns-grid">
+                  {Object.entries(data.methodology.expected_returns).map(([grade, info]) => (
+                    <div key={grade} className={`return-item grade-${grade}`}>
+                      <span className="grade-label">{grade}</span>
+                      <span className="return-value">{info.annual}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="weight-profile">
+              <span className="profile-badge">Adaptive Weights</span>
+              <span className="profile-desc">Weights adjust based on selected investment horizon</span>
+            </div>
+            <ul>
+              <li><strong>Growth (25-40%):</strong> Revenue growth, earnings growth, price momentum</li>
+              <li><strong>Quality (20-35%):</strong> ROE (15-25% ideal), ROA, profit margin, operating margin</li>
+              <li><strong>Financial Strength (15-30%):</strong> Low debt-to-equity, healthy current ratio</li>
+              <li><strong>Valuation (15-25%):</strong> P/E vs sector median, PEG ratio, price-to-book</li>
+            </ul>
+            <p className="adaptive-note">
+              <em>Run rankings to see exact weights for your selected horizon</em>
+            </p>
+          </>
+        )}
         <p className="methodology-note">
           Scores are percentile-ranked across the entire stock universe.
-          Higher scores indicate stronger fundamentals for long-term investing.
+          Higher scores indicate stronger fundamentals for the selected investment horizon.
         </p>
       </div>
 

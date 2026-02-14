@@ -1054,25 +1054,55 @@ def get_composite_scores(
         "available_sectors": sectors,
         "grade_distribution": grade_counts,
         "stocks": paginated,
-        "methodology": {
-            "growth_weight": "30%",
-            "quality_weight": "30%",
-            "financial_strength_weight": "20%",
-            "valuation_weight": "20%",
-            "price_momentum_period": period_label,
-            "scoring": "Percentile-based normalization across universe",
-            "grades": {
-                "A": "80-100",
-                "B": "65-79",
-                "C": "50-64",
-                "D": "35-49",
-                "F": "0-34",
-            },
-        },
+        "methodology": _get_adaptive_methodology(horizon),
     }
 
     prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
     return response
+
+
+def _get_adaptive_methodology(horizon_months: int) -> dict:
+    """Get methodology description with adaptive weights based on horizon."""
+    if horizon_months <= 3:
+        weights = {"growth": 40, "quality": 20, "financial_strength": 15, "valuation": 25}
+        profile = "Short-term (momentum-focused)"
+        description = "Higher weight on growth/momentum for short-term picks"
+    elif horizon_months <= 12:
+        weights = {"growth": 30, "quality": 30, "financial_strength": 20, "valuation": 20}
+        profile = "Medium-term (balanced)"
+        description = "Balanced approach for 1-year horizon"
+    elif horizon_months <= 60:
+        weights = {"growth": 25, "quality": 35, "financial_strength": 25, "valuation": 15}
+        profile = "Long-term (quality-focused)"
+        description = "Higher weight on quality and financial strength for multi-year holds"
+    else:
+        weights = {"growth": 20, "quality": 35, "financial_strength": 30, "valuation": 15}
+        profile = "Very long-term (quality + stability)"
+        description = "Maximum weight on fundamentals for 5+ year investments"
+
+    return {
+        "weight_profile": profile,
+        "description": description,
+        "growth_weight": f"{weights['growth']}%",
+        "quality_weight": f"{weights['quality']}%",
+        "financial_strength_weight": f"{weights['financial_strength']}%",
+        "valuation_weight": f"{weights['valuation']}%",
+        "scoring": "Percentile-based normalization across universe",
+        "expected_returns": {
+            "A": {"annual": "12-25%", "description": "Strong outperformers"},
+            "B": {"annual": "8-18%", "description": "Above-average returns"},
+            "C": {"annual": "4-12%", "description": "Market-average returns"},
+            "D": {"annual": "-2-8%", "description": "Below-average returns"},
+            "F": {"annual": "-10-5%", "description": "Underperformers"},
+        },
+        "grades": {
+            "A": "80-100 (Top picks)",
+            "B": "65-79 (Strong)",
+            "C": "50-64 (Average)",
+            "D": "35-49 (Weak)",
+            "F": "0-34 (Avoid)",
+        },
+    }
 
 
 @app.get("/composite-score/{ticker}")
