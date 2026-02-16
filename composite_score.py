@@ -4,13 +4,16 @@ Long-Term Composite Stock Scoring System
 A data-driven scoring engine that ranks companies based on fundamentals
 for long-term investing (not short-term trading).
 
-Composite Score Formula:
-- Growth (30%): Revenue growth, Earnings growth, Price momentum
-- Quality (30%): ROE, ROA, Profit margin, Operating margin
-- Financial Strength (20%): Debt-to-equity, Current ratio, Institutional holders
-- Valuation Sanity (20%): P/E vs sector avg, PEG ratio, Price-to-book
+IMPORTANT: Uses the shared scoring module (scoring.py) to ensure
+consistency between live scoring and backtesting.
+
+Scoring Methodology: ABSOLUTE (not percentile-based)
+- Scores reflect objective quality standards
+- Better for long-term investors: identifies genuinely good businesses
+- Same stock scores consistently over time
 
 Final Score: 0-100 scale, higher = better investment candidate
+Grade Thresholds: A >= 75, B >= 60, C >= 45, D >= 30, F < 30
 """
 
 import logging
@@ -21,6 +24,14 @@ import numpy as np
 from cache import stock_data_cache
 from config import STOCK_DATA_CACHE_TTL
 from data import fetch_fundamental_data, fetch_stock_data, fetch_stock_data_extended, SECTOR_ENCODING
+
+# Import shared scoring module - SINGLE SOURCE OF TRUTH
+from scoring import (
+    calculate_composite_score as compute_score,
+    get_grade,
+    get_weights,
+    GRADE_THRESHOLDS,
+)
 
 # Import the expanded stock list (will be added to config.py)
 try:
@@ -35,22 +46,8 @@ logger = logging.getLogger(__name__)
 # Cache TTL for composite scores (6 hours)
 COMPOSITE_CACHE_TTL = 21600
 
-# Grade thresholds
-GRADE_THRESHOLDS = [
-    (80, "A"),
-    (65, "B"),
-    (50, "C"),
-    (35, "D"),
-    (0, "F"),
-]
-
-
-def _get_grade(score: float) -> str:
-    """Convert numeric score to letter grade."""
-    for threshold, grade in GRADE_THRESHOLDS:
-        if score >= threshold:
-            return grade
-    return "F"
+# Note: GRADE_THRESHOLDS and get_grade are imported from scoring.py
+# This ensures consistency between live and backtest systems
 
 
 def _estimate_expected_return(grade: str, horizon_months: int) -> Tuple[float, str]:
@@ -574,15 +571,43 @@ def _calculate_valuation_score(fundamentals: Dict, all_fundamentals: List[Dict])
     return score, metrics
 
 
-def _fetch_all_fundamentals(stocks: List[str], max_workers: int = 8) -> Dict[str, Dict]:
-    """Fetch fundamental data for all stocks in parallel."""
+def _fetch_all_fundamentals(
+    stocks: List[str],
+    max_workers: int = 2,
+    progress_callback: Optional[callable] = None,
+    cancel_check: Optional[callable] = None
+) -> Optional[Dict[str, Dict]]:
+    """
+    Fetch fundamental data for all stocks in parallel.
+
+    Args:
+        stocks: List of ticker symbols
+        max_workers: Number of parallel workers
+        progress_callback: Optional callback(current, total, ticker) for progress updates
+        cancel_check: Optional callable that returns True if job was cancelled
+
+    Returns:
+        Dict mapping ticker to fundamentals, or None if cancelled
+    """
     fundamentals = {}
+    total = len(stocks)
+    completed = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_fundamental_data, ticker): ticker for ticker in stocks}
 
         for future in as_completed(futures):
+            # Check for cancellation
+            if cancel_check and cancel_check():
+                executor.shutdown(wait=False, cancel_futures=True)
+                return None
+
             ticker = futures[future]
+            completed += 1
+
+            if progress_callback:
+                progress_callback(completed, total, ticker)
+
             try:
                 data = future.result()
                 if data:
@@ -593,7 +618,13 @@ def _fetch_all_fundamentals(stocks: List[str], max_workers: int = 8) -> Dict[str
     return fundamentals
 
 
-def _fetch_all_period_returns(stocks: List[str], months: int = 24, max_workers: int = 8) -> Dict[str, float]:
+def _fetch_all_period_returns(
+    stocks: List[str],
+    months: int = 24,
+    max_workers: int = 2,
+    progress_callback: Optional[callable] = None,
+    cancel_check: Optional[callable] = None
+) -> Optional[Dict[str, float]]:
     """
     Fetch price returns for all stocks over a specified period in parallel.
 
@@ -601,17 +632,31 @@ def _fetch_all_period_returns(stocks: List[str], months: int = 24, max_workers: 
         stocks: List of ticker symbols
         months: Number of months for return calculation (1-120)
         max_workers: Parallel workers
+        progress_callback: Optional callback(current, total, ticker) for progress updates
+        cancel_check: Optional callable that returns True if job was cancelled
 
     Returns:
-        Dict mapping ticker to percentage return
+        Dict mapping ticker to percentage return, or None if cancelled
     """
     returns = {}
+    total = len(stocks)
+    completed = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_calculate_period_return, ticker, months): ticker for ticker in stocks}
 
         for future in as_completed(futures):
+            # Check for cancellation
+            if cancel_check and cancel_check():
+                executor.shutdown(wait=False, cancel_futures=True)
+                return None
+
             ticker = futures[future]
+            completed += 1
+
+            if progress_callback:
+                progress_callback(completed, total, ticker)
+
             try:
                 ret = future.result()
                 if ret is not None:
@@ -631,10 +676,12 @@ def calculate_composite_score(
     """
     Calculate composite score for a single stock.
 
+    IMPORTANT: Uses the shared scoring module (scoring.py) to ensure
+    identical behavior between live scoring and backtesting.
+
     Args:
         ticker: Stock ticker symbol
-        all_fundamentals: Optional pre-fetched fundamentals for percentile ranking.
-                         If not provided, will use cached data or fetch minimal set.
+        all_fundamentals: Optional pre-fetched fundamentals (used for ranking only)
         horizon_months: Investment horizon in months (1, 3, 6, 12, 24, 60, 120)
         all_period_returns: Pre-fetched returns for momentum calculation
 
@@ -645,7 +692,7 @@ def calculate_composite_score(
     horizon_months = min(max(horizon_months, 1), 120)
 
     # Check cache (include horizon in cache key)
-    cache_key = f"{ticker}:composite_score:{horizon_months}m"
+    cache_key = f"{ticker}:composite_score_v2:{horizon_months}m"
     cached = stock_data_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -655,86 +702,26 @@ def calculate_composite_score(
     if not fundamentals:
         return None
 
-    # If no all_fundamentals provided, fetch for comparison
-    if all_fundamentals is None:
-        # Use a subset of stocks for percentile ranking
-        comparison_stocks = COMPOSITE_STOCK_LIST[:100]
-        all_fundamentals = _fetch_all_fundamentals(comparison_stocks)
+    # Calculate price momentum
+    price_momentum = None
+    if horizon_months == 12:
+        # Use 52-week change from fundamentals
+        fifty_two_week = fundamentals.get("fifty_two_week_change")
+        if fifty_two_week is not None:
+            price_momentum = fifty_two_week  # Already a decimal
+    elif all_period_returns and ticker in all_period_returns:
+        # Use calculated returns
+        total_return = all_period_returns[ticker]
+        price_momentum = total_return / 100  # Convert to decimal
 
-    # Fetch period returns if needed and not provided (skip for 12 months - uses 52-week change)
-    if horizon_months != 12 and all_period_returns is None:
-        all_period_returns = _fetch_all_period_returns(
-            list(all_fundamentals.keys()), months=horizon_months
-        )
-
-    all_fund_list = list(all_fundamentals.values())
-
-    # Calculate sub-scores
-    growth_score, growth_metrics = _calculate_growth_score(
-        fundamentals, all_fund_list, ticker, horizon_months, all_period_returns
+    # Use the SHARED scoring module (same as backtest)
+    score_result = compute_score(
+        fundamentals=fundamentals,
+        price_momentum=price_momentum,
+        horizon_months=horizon_months,
     )
-    quality_score, quality_metrics = _calculate_quality_score(fundamentals, all_fund_list)
-    financial_score, financial_metrics = _calculate_financial_strength_score(fundamentals, all_fund_list)
-    valuation_score, valuation_metrics = _calculate_valuation_score(fundamentals, all_fund_list)
 
-    # Calculate composite score with ADAPTIVE weights based on horizon
-    # Short-term: momentum/growth matters more
-    # Long-term: quality/fundamentals matter more
-    if horizon_months <= 3:
-        # Very short-term: momentum-heavy
-        weights = {
-            "growth": 0.40,        # Includes price momentum
-            "quality": 0.20,
-            "financial_strength": 0.15,
-            "valuation": 0.25,
-        }
-        weight_profile = "short-term (momentum-focused)"
-    elif horizon_months <= 12:
-        # Medium-term: balanced
-        weights = {
-            "growth": 0.30,
-            "quality": 0.30,
-            "financial_strength": 0.20,
-            "valuation": 0.20,
-        }
-        weight_profile = "medium-term (balanced)"
-    elif horizon_months <= 60:
-        # Long-term (1-5 years): quality focus
-        weights = {
-            "growth": 0.25,
-            "quality": 0.35,
-            "financial_strength": 0.25,
-            "valuation": 0.15,
-        }
-        weight_profile = "long-term (quality-focused)"
-    else:
-        # Very long-term (5+ years): quality and financial strength dominate
-        weights = {
-            "growth": 0.20,
-            "quality": 0.35,
-            "financial_strength": 0.30,
-            "valuation": 0.15,
-        }
-        weight_profile = "very long-term (quality + stability)"
-
-    scores = {
-        "growth": growth_score,
-        "quality": quality_score,
-        "financial_strength": financial_score,
-        "valuation": valuation_score,
-    }
-
-    total_weight = 0
-    weighted_sum = 0
-
-    for key, weight in weights.items():
-        if scores[key] is not None:
-            weighted_sum += scores[key] * weight
-            total_weight += weight
-
-    if total_weight > 0:
-        composite_score = weighted_sum / total_weight
-    else:
+    if score_result is None:
         return None
 
     # Get sector name (reverse lookup)
@@ -744,9 +731,21 @@ def calculate_composite_score(
         "Unknown"
     )
 
+    # Get weight profile description
+    weights = get_weights(horizon_months)
+    if horizon_months <= 3:
+        weight_profile = "short-term (valuation + sentiment)"
+    elif horizon_months <= 6:
+        weight_profile = "medium-term (valuation + moderate sentiment)"
+    elif horizon_months <= 12:
+        weight_profile = "1-year (valuation-focused)"
+    elif horizon_months <= 24:
+        weight_profile = "2-year (quality + stability)"
+    else:
+        weight_profile = "long-term (quality + stability)"
+
     # Calculate expected return based on grade and horizon
-    # These estimates are based on historical backtesting of the scoring system
-    grade = _get_grade(composite_score)
+    grade = score_result["grade"]
     expected_return, expected_range = _estimate_expected_return(grade, horizon_months)
 
     result = {
@@ -755,7 +754,7 @@ def calculate_composite_score(
         "sector": sector_name,
         "horizon_months": horizon_months,
         "horizon_label": _get_period_label(horizon_months),
-        "composite_score": round(composite_score, 1),
+        "composite_score": score_result["composite_score"],
         "grade": grade,
         "weight_profile": weight_profile,
         "weights_used": weights,
@@ -763,17 +762,13 @@ def calculate_composite_score(
         "expected_annual_return": expected_return,
         "expected_return_range": expected_range,
         "expected_total_return": _calculate_total_expected_return(expected_return, horizon_months),
-        # Sub-scores
-        "growth_score": round(growth_score, 1) if growth_score else None,
-        "quality_score": round(quality_score, 1) if quality_score else None,
-        "financial_strength_score": round(financial_score, 1) if financial_score else None,
-        "valuation_score": round(valuation_score, 1) if valuation_score else None,
-        "metrics": {
-            "growth": growth_metrics,
-            "quality": quality_metrics,
-            "financial_strength": financial_metrics,
-            "valuation": valuation_metrics,
-        },
+        # Sub-scores (from shared scoring module)
+        "growth_score": score_result.get("growth_score"),
+        "quality_score": score_result.get("quality_score"),
+        "financial_strength_score": score_result.get("financial_score"),
+        "valuation_score": score_result.get("valuation_score"),
+        "sentiment_score": score_result.get("sentiment_score"),  # Short-term only
+        "metrics": score_result.get("metrics", {}),
         "raw_fundamentals": {
             "market_cap": fundamentals.get("market_cap"),
             "pe_ratio": fundamentals.get("pe_ratio"),
@@ -789,6 +784,10 @@ def calculate_composite_score(
             "debt_to_equity": fundamentals.get("debt_to_equity"),
             "current_ratio": fundamentals.get("current_ratio"),
             "dividend_yield": fundamentals.get("dividend_yield"),
+            # Sentiment data (for short-term horizons)
+            "short_percent": fundamentals.get("short_percent"),
+            "analyst_sentiment": fundamentals.get("analyst_sentiment"),
+            "earnings_surprise": fundamentals.get("earnings_surprise"),
         },
     }
 
@@ -801,9 +800,10 @@ def calculate_composite_score(
 def rank_all_stocks(
     stocks: Optional[List[str]] = None,
     horizon_months: int = 24,
-    max_workers: int = 8,
-    progress_callback: Optional[callable] = None
-) -> List[Dict]:
+    max_workers: int = 2,
+    progress_callback: Optional[callable] = None,
+    cancel_check: Optional[callable] = None
+) -> Optional[List[Dict]]:
     """
     Rank all stocks in universe by composite score.
 
@@ -811,10 +811,12 @@ def rank_all_stocks(
         stocks: Optional list of stocks to rank. Defaults to COMPOSITE_STOCK_LIST.
         horizon_months: Investment horizon in months (1, 3, 6, 12, 24, 60, 120)
         max_workers: Number of parallel workers for data fetching.
-        progress_callback: Optional callback(current, total, ticker) for progress updates.
+        progress_callback: Optional callback(current, total, ticker, phase) for progress updates.
+            - phase: "fundamentals", "returns", or "scoring"
+        cancel_check: Optional callable that returns True if job was cancelled.
 
     Returns:
-        Sorted list of stock scores, best first.
+        Sorted list of stock scores, best first. None if cancelled.
     """
     if stocks is None:
         stocks = COMPOSITE_STOCK_LIST
@@ -827,8 +829,21 @@ def rank_all_stocks(
     if cached is not None:
         return cached
 
+    # Check for cancellation
+    if cancel_check and cancel_check():
+        return None
+
     # Fetch all fundamentals first for accurate percentile ranking
-    all_fundamentals = _fetch_all_fundamentals(stocks, max_workers)
+    def fundamentals_progress(current, total, ticker):
+        if progress_callback:
+            progress_callback(current, total, ticker, "fundamentals")
+
+    all_fundamentals = _fetch_all_fundamentals(
+        stocks, max_workers, fundamentals_progress, cancel_check
+    )
+
+    if all_fundamentals is None:
+        return None  # Cancelled
 
     if not all_fundamentals:
         return []
@@ -836,19 +851,31 @@ def rank_all_stocks(
     # Fetch period returns (skip for 12 months - uses 52-week change from fundamentals)
     all_period_returns = None
     if horizon_months != 12:
+        def returns_progress(current, total, ticker):
+            if progress_callback:
+                progress_callback(current, total, ticker, "returns")
+
         all_period_returns = _fetch_all_period_returns(
-            list(all_fundamentals.keys()), months=horizon_months, max_workers=max_workers
+            list(all_fundamentals.keys()),
+            months=horizon_months,
+            max_workers=max_workers,
+            progress_callback=returns_progress,
+            cancel_check=cancel_check
         )
+
+        if all_period_returns is None:
+            return None  # Cancelled
 
     # Calculate scores for each stock
     results = []
     total = len(all_fundamentals)
 
     for i, ticker in enumerate(all_fundamentals.keys()):
+        if cancel_check and cancel_check():
+            return None  # Cancelled
+
         if progress_callback:
-            should_continue = progress_callback(i, total, ticker)
-            if should_continue is False:
-                return None  # Cancelled
+            progress_callback(i + 1, total, ticker, "scoring")
 
         score = calculate_composite_score(
             ticker, all_fundamentals, horizon_months, all_period_returns

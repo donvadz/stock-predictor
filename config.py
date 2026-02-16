@@ -6,6 +6,14 @@ load_dotenv()
 # API Configuration
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
+# SEC EDGAR Configuration
+# User-Agent is REQUIRED by SEC - must include contact email
+SEC_EDGAR_USER_AGENT = os.getenv(
+    "SEC_EDGAR_USER_AGENT",
+    "StockPredictor/1.0 (contact@example.com)"
+)
+SEC_EDGAR_CACHE_DB = os.getenv("SEC_EDGAR_CACHE_DB", ".cache/sec_edgar.db")
+
 # Cache TTL in seconds (6 hours - predictions use daily close prices only)
 STOCK_DATA_CACHE_TTL = 21600  # 6 hours
 PREDICTION_CACHE_TTL = 21600  # 6 hours

@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Rate limit handling
 _last_request_time = 0
-_request_delay = 0.5  # 500ms between requests to avoid rate limiting
+_request_delay = 1.5  # 1.5s between requests to avoid Yahoo Finance rate limiting
+_request_lock = __import__('threading').Lock()  # Ensure serial requests even with parallel workers
 
 # Sector encoding for ML model
 SECTOR_ENCODING = {

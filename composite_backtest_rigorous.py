@@ -30,6 +30,39 @@ logger = logging.getLogger(__name__)
 BACKTEST_CACHE_TTL = 21600  # 6 hours
 
 
+def estimate_spread_from_market_cap(market_cap: Optional[float]) -> float:
+    """
+    Estimate bid-ask spread based on market cap.
+
+    Matches the frontend estimates for Trading 212 users.
+    Based on typical spreads for US stocks on commission-free brokers.
+
+    Args:
+        market_cap: Market capitalization in dollars
+
+    Returns:
+        Estimated spread as percentage (e.g., 0.02 for 0.02%)
+    """
+    if market_cap is None:
+        return 0.10  # Default to mid-cap spread if unknown
+
+    if market_cap >= 200e9:
+        # Mega cap (>$200B): AAPL, MSFT, GOOGL - very tight spreads
+        return 0.02
+    elif market_cap >= 50e9:
+        # Large cap ($50B-$200B): Still very liquid
+        return 0.03
+    elif market_cap >= 10e9:
+        # Mid-large cap ($10B-$50B): Good liquidity
+        return 0.05
+    elif market_cap >= 2e9:
+        # Mid cap ($2B-$10B): Moderate spreads
+        return 0.10
+    else:
+        # Small cap (<$2B): Wider spreads
+        return 0.20
+
+
 @dataclass
 class PortfolioSnapshot:
     """Snapshot of portfolio at a point in time."""
@@ -426,25 +459,39 @@ def run_portfolio_simulation(
     initial_capital: float = 100000,
     top_n: int = 20,
     rebalance_months: int = 3,
-    simulation_years: int = 2,
+    simulation_months: int = 24,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    max_workers: int = 8,
+    max_workers: int = 2,
     progress_callback: Optional[callable] = None,
+    # Transaction cost parameters
+    use_dynamic_spreads: bool = True,  # Use market cap-based spread estimates
+    commission_per_trade: float = 0.0,  # $0 for Trading 212 and most brokers
+    fx_fee_pct: float = 0.15,  # 0.15% FX fee for non-native currency (Trading 212)
 ) -> Dict:
     """
-    Run a walk-forward portfolio simulation.
+    Run a walk-forward portfolio simulation with realistic transaction costs.
+
+    Transaction costs are based on market cap (matching Trading 212 spreads):
+    - Mega cap (>$200B): 0.02% spread
+    - Large cap ($50-200B): 0.03% spread
+    - Mid-large ($10-50B): 0.05% spread
+    - Mid cap ($2-10B): 0.10% spread
+    - Small cap (<$2B): 0.20% spread
 
     Args:
         stocks: Universe of stocks to choose from
         initial_capital: Starting capital
         top_n: Number of top-ranked stocks to hold
-        rebalance_months: Months between rebalancing
-        simulation_years: Number of years to simulate (1-10)
-        start_date: Start date (YYYY-MM-DD), defaults based on simulation_years
+        rebalance_months: Months between rebalancing (auto-adjusted for short periods)
+        simulation_months: Number of months to simulate (1-120)
+        start_date: Start date (YYYY-MM-DD), defaults based on simulation_months
         end_date: End date (YYYY-MM-DD), defaults to today
         max_workers: Parallel workers
         progress_callback: Optional progress callback
+        use_dynamic_spreads: Use market cap-based spread estimates (default True)
+        commission_per_trade: Fixed commission per trade in dollars (default $0)
+        fx_fee_pct: FX conversion fee for non-native currency (default 0.15% for T212)
 
     Returns:
         Dict with simulation results
@@ -452,21 +499,43 @@ def run_portfolio_simulation(
     if stocks is None:
         stocks = COMPOSITE_STOCK_LIST[:150]  # Use top 150 for speed
 
-    simulation_years = min(max(simulation_years, 1), 10)  # Clamp to 1-10 years
+    simulation_months = min(max(simulation_months, 1), 120)  # Clamp to 1-120 months
 
-    cache_key = f"portfolio_sim:{len(stocks)}:{top_n}:{rebalance_months}:{simulation_years}y"
+    # Auto-adjust rebalancing frequency for short periods
+    if simulation_months <= 3:
+        rebalance_months = 1  # Monthly for very short tests
+    elif simulation_months <= 12:
+        rebalance_months = min(rebalance_months, 3)  # At most quarterly for < 1 year
+
+    # Include transaction costs in cache key
+    cache_key = f"portfolio_sim:{len(stocks)}:{top_n}:{rebalance_months}:{simulation_months}m:dynamic_spread:{use_dynamic_spreads}"
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # Transaction cost tracking
+    total_slippage_cost = 0.0
+    total_commission_cost = 0.0
+    total_fx_cost = 0.0
+    total_trades = 0
+    spread_by_tier = {
+        'Mega Cap': {'trades': 0, 'cost': 0.0},
+        'Large Cap': {'trades': 0, 'cost': 0.0},
+        'Mid-Large': {'trades': 0, 'cost': 0.0},
+        'Mid Cap': {'trades': 0, 'cost': 0.0},
+        'Small Cap': {'trades': 0, 'cost': 0.0},
+        'Unknown': {'trades': 0, 'cost': 0.0},
+    }
 
     # Set date range
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
     if start_date is None:
-        start_date = (datetime.now() - timedelta(days=simulation_years * 365)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=int(simulation_months * 30.44))).strftime('%Y-%m-%d')
 
-    # Fetch all price data (need extra year for initial momentum calculation)
-    data_years = min(simulation_years + 1, 10)
+    # Fetch all price data (need extra months for initial momentum calculation)
+    data_months = min(simulation_months + 12, 120)
+    data_years = max(1, (data_months + 11) // 12)  # Convert to years, minimum 1
 
     if progress_callback:
         progress_callback(0, 100, f"Fetching {data_years} years of price data...")
@@ -575,22 +644,98 @@ def run_portfolio_simulation(
         scores.sort(key=lambda x: x['score'], reverse=True)
         selected = scores[:top_n]
 
-        # Calculate portfolio value before rebalancing
+        # Helper to get spread tier name from market cap
+        def get_spread_tier(market_cap):
+            if market_cap is None:
+                return 'Unknown'
+            elif market_cap >= 200e9:
+                return 'Mega Cap'
+            elif market_cap >= 50e9:
+                return 'Large Cap'
+            elif market_cap >= 10e9:
+                return 'Mid-Large'
+            elif market_cap >= 2e9:
+                return 'Mid Cap'
+            else:
+                return 'Small Cap'
+
+        # Calculate portfolio value before rebalancing (sell all existing positions)
+        proceeds_from_sales = 0.0
         if holdings:
-            portfolio_value = cash
             for ticker, shares in holdings.items():
                 if ticker in all_prices and rebal_date in all_prices[ticker]:
-                    portfolio_value += shares * all_prices[ticker][rebal_date]
+                    sale_price = all_prices[ticker][rebal_date]
+                    gross_proceeds = shares * sale_price
 
-        # Rebalance: equal weight across top N
+                    # Get market cap-based spread for this stock
+                    fundamentals = all_fundamentals.get(ticker, {})
+                    market_cap = fundamentals.get('market_cap') if fundamentals else None
+                    spread_pct = estimate_spread_from_market_cap(market_cap) if use_dynamic_spreads else 0.05
+                    tier = get_spread_tier(market_cap)
+
+                    # Apply transaction costs on sale
+                    slippage_cost = gross_proceeds * (spread_pct / 100)
+                    fx_cost = gross_proceeds * (fx_fee_pct / 100)  # FX fee on sale proceeds
+                    net_proceeds = gross_proceeds - slippage_cost - fx_cost - commission_per_trade
+
+                    proceeds_from_sales += net_proceeds
+                    total_slippage_cost += slippage_cost
+                    total_fx_cost += fx_cost
+                    total_commission_cost += commission_per_trade
+                    total_trades += 1
+                    spread_by_tier[tier]['trades'] += 1
+                    spread_by_tier[tier]['cost'] += slippage_cost
+
+                    all_trades.append({
+                        'date': rebal_date,
+                        'ticker': ticker,
+                        'action': 'sell',
+                        'shares': shares,
+                        'price': sale_price,
+                        'spread_pct': spread_pct,
+                        'slippage': slippage_cost,
+                        'fx_cost': fx_cost,
+                        'commission': commission_per_trade,
+                        'tier': tier,
+                    })
+
+            portfolio_value = proceeds_from_sales + cash
+
+        # Rebalance: equal weight across top N (with transaction costs)
         position_size = portfolio_value / top_n
         new_holdings = {}
+        total_spent = 0.0
 
         for stock in selected:
             ticker = stock['ticker']
             price = stock['price_at_rebal']
-            shares = position_size / price
+
+            # Get market cap-based spread for this stock
+            fundamentals = all_fundamentals.get(ticker, {})
+            market_cap = fundamentals.get('market_cap') if fundamentals else None
+            spread_pct = estimate_spread_from_market_cap(market_cap) if use_dynamic_spreads else 0.05
+            tier = get_spread_tier(market_cap)
+
+            # Apply transaction costs on purchase
+            # Effective price is higher due to spread and FX fee
+            total_cost_pct = spread_pct + fx_fee_pct
+            effective_price = price * (1 + total_cost_pct / 100)
+
+            # Calculate shares we can actually buy after costs
+            shares = (position_size - commission_per_trade) / effective_price
+            actual_cost = shares * effective_price + commission_per_trade
+
+            slippage_cost = shares * price * (spread_pct / 100)
+            fx_cost = shares * price * (fx_fee_pct / 100)
+            total_slippage_cost += slippage_cost
+            total_fx_cost += fx_cost
+            total_commission_cost += commission_per_trade
+            total_trades += 1
+            spread_by_tier[tier]['trades'] += 1
+            spread_by_tier[tier]['cost'] += slippage_cost
+
             new_holdings[ticker] = shares
+            total_spent += actual_cost
 
             all_trades.append({
                 'date': rebal_date,
@@ -598,11 +743,17 @@ def run_portfolio_simulation(
                 'action': 'buy',
                 'shares': shares,
                 'price': price,
+                'effective_price': effective_price,
+                'spread_pct': spread_pct,
+                'slippage': slippage_cost,
+                'fx_cost': fx_cost,
+                'commission': commission_per_trade,
+                'tier': tier,
                 'score': stock['score'],
             })
 
         holdings = new_holdings
-        cash = 0
+        cash = portfolio_value - total_spent  # Any remainder stays as cash
 
         # Calculate end-of-period value
         end_portfolio_value = 0
@@ -692,9 +843,26 @@ def run_portfolio_simulation(
         verdict = "UNDERPERFORMED"
         verdict_detail = "Strategy underperformed the benchmark"
 
+    # Generate user-friendly period label
+    if simulation_months < 12:
+        period_label = f"{simulation_months} months"
+    elif simulation_months == 12:
+        period_label = "1 year"
+    else:
+        period_label = f"{simulation_months // 12} years"
+
+    # Calculate transaction cost impact
+    total_transaction_costs = total_slippage_cost + total_fx_cost + total_commission_cost
+    transaction_cost_pct = (total_transaction_costs / initial_capital) * 100
+
+    # Calculate average spread paid
+    avg_spread = (total_slippage_cost / total_trades / (initial_capital / total_trades)) * 100 if total_trades > 0 else 0
+
     result = {
         "simulation_type": "walk_forward_portfolio",
-        "simulation_years": simulation_years,
+        "simulation_months": simulation_months,
+        "simulation_years": simulation_months / 12,  # For backward compatibility
+        "period_label": period_label,
         "period": f"{start_date} to {end_date}",
         "stocks_in_universe": len(all_prices),
         "positions_held": top_n,
@@ -718,6 +886,26 @@ def run_portfolio_simulation(
             "max_drawdown": round(max_dd, 2),
             "avg_period_return": round(avg_period_return, 2),
         },
+        "transaction_costs": {
+            "total_trades": total_trades,
+            "total_spread_cost": round(total_slippage_cost, 2),
+            "total_fx_cost": round(total_fx_cost, 2),
+            "total_commissions": round(total_commission_cost, 2),
+            "total_costs": round(total_transaction_costs, 2),
+            "cost_as_pct_of_capital": round(transaction_cost_pct, 2),
+            "avg_spread_paid": f"{avg_spread:.3f}%",
+            "fx_fee_rate": f"{fx_fee_pct}%",
+            "commission_per_trade": f"${commission_per_trade}",
+            "dynamic_spreads": use_dynamic_spreads,
+            "spread_breakdown": {
+                tier: {
+                    "trades": data["trades"],
+                    "total_cost": round(data["cost"], 2),
+                }
+                for tier, data in spread_by_tier.items()
+                if data["trades"] > 0
+            },
+        },
         "equity_curve": [
             {"date": s.date, "portfolio": round(s.portfolio_value, 2), "benchmark": round(s.benchmark_value, 2)}
             for s in snapshots
@@ -731,6 +919,7 @@ def run_portfolio_simulation(
             "rebalancing": f"Equal-weight top {top_n} stocks every {rebalance_months} months",
             "benchmark": "SPY (S&P 500 ETF)",
             "bias_mitigation": "Uses historical prices only; fundamentals have some forward bias",
+            "transaction_costs": "Dynamic spreads based on market cap (0.02-0.20%) + 0.15% FX fee",
         },
     }
 
@@ -784,7 +973,7 @@ def run_monte_carlo_significance(
     top_n: int = 20,
     return_period_days: int = None,  # Auto-calculated based on data_years
     data_years: int = 3,
-    max_workers: int = 8,
+    max_workers: int = 2,
     progress_callback: Optional[callable] = None,
 ) -> Dict:
     """
@@ -1022,6 +1211,7 @@ def run_monte_carlo_significance(
         "stocks_analyzed": len(all_prices),
         "portfolio_size": top_n,
         "periods_tested": len(period_results),
+        "num_simulations": len(period_results),  # For frontend compatibility
         "data_years": data_years,
         "holding_period": f"{return_period_days} days",
         "horizon": horizon_label,
@@ -1072,8 +1262,8 @@ def run_monte_carlo_significance(
 
 def run_rigorous_backtest(
     stocks: Optional[List[str]] = None,
-    simulation_years: int = 2,
-    max_workers: int = 8,
+    simulation_months: int = 24,
+    max_workers: int = 2,
     progress_callback: Optional[callable] = None,
 ) -> Dict:
     """
@@ -1081,16 +1271,16 @@ def run_rigorous_backtest(
 
     Args:
         stocks: Universe of stocks
-        simulation_years: Years to simulate (1-10)
+        simulation_months: Months to simulate (1-120)
         max_workers: Parallel workers
         progress_callback: Progress callback
     """
     if stocks is None:
         stocks = COMPOSITE_STOCK_LIST[:150]
 
-    simulation_years = min(max(simulation_years, 1), 10)  # Clamp to 1-10 years
+    simulation_months = min(max(simulation_months, 1), 120)  # Clamp to 1-120 months
 
-    cache_key = f"rigorous_backtest:{len(stocks)}:{simulation_years}y"
+    cache_key = f"rigorous_backtest_v2:{len(stocks)}:{simulation_months}m"  # v2 = dynamic spreads + FX
     cached = prediction_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -1100,18 +1290,27 @@ def run_rigorous_backtest(
         stocks=stocks,
         top_n=20,
         rebalance_months=3,
-        simulation_years=simulation_years,
+        simulation_months=simulation_months,
         max_workers=max_workers,
         progress_callback=progress_callback,
     )
 
     # Run Pick Quality test (replaces Monte Carlo significance test)
     # Tests whether top-scored stocks actually go up over time
+    # Adjust return period for short simulations
+    if simulation_months <= 3:
+        return_period_days = 30  # Monthly for very short tests
+    elif simulation_months <= 12:
+        return_period_days = 60  # Bi-monthly for < 1 year
+    else:
+        return_period_days = 90  # Quarterly for longer tests
+
+    data_years = max(1, (simulation_months + 12) // 12)  # Convert to years with buffer
     pick_quality_result = run_monte_carlo_significance(
         stocks=stocks,
         top_n=20,
-        return_period_days=90,  # Quarterly holding periods
-        data_years=simulation_years + 1,
+        return_period_days=return_period_days,
+        data_years=data_years,
         max_workers=max_workers,
     )
 
@@ -1141,9 +1340,19 @@ def run_rigorous_backtest(
         overall_verdict = "NEEDS WORK"
         overall_detail = "Strategy not producing reliable profitable picks"
 
+    # Generate user-friendly period label
+    if simulation_months < 12:
+        period_label = f"{simulation_months} months"
+    elif simulation_months == 12:
+        period_label = "1 year"
+    else:
+        period_label = f"{simulation_months // 12} years"
+
     result = {
         "backtest_type": "rigorous_comprehensive",
-        "simulation_years": simulation_years,
+        "simulation_months": simulation_months,
+        "simulation_years": simulation_months / 12,  # For backward compatibility
+        "period_label": period_label,
         "overall_verdict": overall_verdict,
         "overall_detail": overall_detail,
         "portfolio_simulation": portfolio_result,

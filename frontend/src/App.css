@@ -1836,6 +1836,14 @@ footer {
   font-size: 0.9rem;
 }
 
+.spread-note {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: #c2185b;
+  font-style: italic;
+}
+
 /* Expected Returns Grid */
 .expected-returns-summary {
   margin-top: 16px;
@@ -2535,6 +2543,20 @@ footer {
   background: #f44336;
 }
 
+/* Progress Stats */
+.progress-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 8px;
+}
+
+.progress-stats span {
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
 /* Job Timer */
 .job-timer {
   display: flex;
@@ -2932,6 +2954,23 @@ footer {
   background: linear-gradient(135deg, #424242, #616161);
 }
 
+.cancel-backtest-btn {
+  padding: 10px 24px;
+  background: linear-gradient(135deg, #c62828, #e53935);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.3);
+}
+
+.cancel-backtest-btn:hover {
+  background: linear-gradient(135deg, #b71c1c, #c62828);
+}
+
 .ranking-actions {
   display: flex;
   gap: 12px;
@@ -3187,7 +3226,7 @@ footer {
 
 .expanded-sections {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 24px;
 }
 
@@ -3284,6 +3323,97 @@ footer {
   color: #c62828;
 }
 
+/* Trading Costs Section */
+.trading-costs-section {
+  margin-top: 16px;
+  padding: 16px;
+  background: linear-gradient(135deg, #fce4ec 0%, #f3e5f5 100%);
+  border-radius: 8px;
+  border: 1px solid #f8bbd9;
+}
+
+.trading-costs-section h4 {
+  color: #c2185b;
+  border-bottom-color: #f8bbd9;
+}
+
+.trading-costs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.cost-info-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 6px;
+  border: 1px solid #f8bbd9;
+}
+
+.cost-label {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.cost-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.cost-value.negative {
+  color: #c62828;
+}
+
+.trading-costs-grid .cost-note {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(255,255,255,0.7);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #666;
+}
+
+.trading-costs-grid .cost-note p {
+  margin: 2px 0;
+}
+
+/* Spread breakdown in backtest */
+.spread-breakdown {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f8bbd9;
+}
+
+.spread-breakdown .breakdown-label {
+  font-size: 0.8rem;
+  color: #666;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.breakdown-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tier-badge {
+  font-size: 0.7rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: white;
+  border: 1px solid #e0e0e0;
+  color: #555;
+}
+
+.tier-badge:hover {
+  background: #f5f5f5;
+}
+
 /* Pagination */
 .ranking-pagination {
   display: flex;
@@ -3356,6 +3486,10 @@ footer {
 
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .trading-costs-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .breakdown-col {
@@ -3823,6 +3957,55 @@ footer {
   color: white;
 }
 
+/* Sample Size Selector */
+.sample-size-selector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.sample-size-selector .selector-label {
+  font-size: 0.9rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.sample-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.sample-btn {
+  padding: 8px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  background: white;
+  color: #666;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.sample-btn:hover {
+  border-color: #1565c0;
+  color: #1565c0;
+}
+
+.sample-btn.active {
+  background: linear-gradient(135deg, #1565c0, #1976d2);
+  border-color: #1565c0;
+  color: white;
+}
+
+.sample-desc {
+  font-size: 0.8rem;
+  color: #888;
+  font-style: italic;
+}
+
 /* Simulation Period Banner */
 .simulation-period-banner {
   display: flex;
@@ -3978,6 +4161,47 @@ footer {
 
 .risk-row span:last-child {
   font-weight: 600;
+}
+
+/* Transaction Costs */
+.transaction-costs {
+  margin-top: 20px;
+  padding: 16px;
+  background: #fce4ec;
+  border-radius: 8px;
+  border: 1px solid #f8bbd9;
+}
+
+.transaction-costs h6 {
+  margin: 0 0 12px 0;
+  font-size: 0.9rem;
+  color: #c2185b;
+}
+
+.cost-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.cost-row span:last-child {
+  font-weight: 600;
+}
+
+.cost-row.total-cost {
+  border-top: 1px solid #f8bbd9;
+  padding-top: 10px;
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.cost-note {
+  margin-top: 12px;
+  font-size: 0.75rem;
+  color: #888;
+  font-style: italic;
 }
 
 /* Equity Curve */
@@ -4136,6 +4360,309 @@ footer {
   line-height: 1.7;
 }
 
+/* Grade Validation Styles */
+.grade-validation-summary {
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 20px;
+}
+
+.grade-validation-summary h5 {
+  margin: 0 0 8px 0;
+  color: #1a1a2e;
+}
+
+.grade-success-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.grade-stat {
+  text-align: center;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.grade-stat.primary {
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border: 2px solid #1976d2;
+}
+
+.grade-label {
+  display: block;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.grade-value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.grade-value.positive {
+  color: #2e7d32;
+}
+
+.grade-value.negative {
+  color: #c62828;
+}
+
+/* Expected Returns Reference */
+.expected-returns-ref {
+  background: #f5f5f5;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.expected-returns-ref h6 {
+  margin: 0 0 10px 0;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.expected-grid {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.expected-item {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.expected-item.grade-a {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.expected-item.grade-b {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.expected-item.grade-c {
+  background: #fff8e1;
+  color: #f57f17;
+}
+
+.expected-item.grade-d {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.expected-item.grade-f {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* Factor Analysis Section */
+.factor-analysis-section {
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 20px;
+}
+
+.factor-analysis-section h5 {
+  margin: 0 0 8px 0;
+  color: #1a1a2e;
+}
+
+.factor-analysis-section .factor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.factor-analysis-section .factor-card {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 10px;
+  border: 2px solid #e0e0e0;
+  text-align: center;
+}
+
+.factor-analysis-section .factor-card.strong {
+  border-color: #4caf50;
+  background: #e8f5e9;
+}
+
+.factor-analysis-section .factor-card.moderate {
+  border-color: #2196f3;
+  background: #e3f2fd;
+}
+
+.factor-analysis-section .factor-card.weak {
+  border-color: #ff9800;
+  background: #fff8e1;
+}
+
+.factor-analysis-section .factor-card.inverse,
+.factor-analysis-section .factor-card.weak-inverse {
+  border-color: #f44336;
+  background: #ffebee;
+}
+
+.factor-analysis-section .factor-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #1a1a2e;
+  margin-bottom: 12px;
+}
+
+.factor-analysis-section .factor-correlation,
+.factor-analysis-section .factor-spread {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  margin-bottom: 6px;
+}
+
+.factor-analysis-section .corr-label,
+.factor-analysis-section .spread-label {
+  color: #666;
+}
+
+.factor-analysis-section .corr-value,
+.factor-analysis-section .spread-value {
+  font-weight: 600;
+}
+
+.factor-analysis-section .corr-value.positive,
+.factor-analysis-section .spread-value.positive {
+  color: #2e7d32;
+}
+
+.factor-analysis-section .corr-value.negative,
+.factor-analysis-section .spread-value.negative {
+  color: #c62828;
+}
+
+.factor-analysis-section .factor-power {
+  margin: 10px 0;
+}
+
+.factor-analysis-section .power-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.factor-analysis-section .power-badge.strong {
+  background: #4caf50;
+  color: white;
+}
+
+.factor-analysis-section .power-badge.moderate {
+  background: #2196f3;
+  color: white;
+}
+
+.factor-analysis-section .power-badge.weak {
+  background: #ff9800;
+  color: white;
+}
+
+.factor-analysis-section .power-badge.inverse,
+.factor-analysis-section .power-badge.weak-inverse {
+  background: #f44336;
+  color: white;
+}
+
+.factor-analysis-section .factor-details {
+  display: flex;
+  justify-content: space-around;
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e0e0e0;
+}
+
+/* Period Breakdown */
+.period-breakdown {
+  margin-bottom: 20px;
+}
+
+.period-breakdown h5 {
+  margin: 0 0 12px 0;
+  color: #1a1a2e;
+}
+
+.period-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.period-card {
+  background: white;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid #e0e0e0;
+}
+
+.period-card h6 {
+  margin: 0 0 4px 0;
+  font-size: 1rem;
+  color: #1a1a2e;
+}
+
+.period-dates {
+  font-size: 0.75rem;
+  color: #888;
+  margin-bottom: 12px;
+}
+
+.period-stats {
+  font-size: 0.85rem;
+}
+
+.ps-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.ps-row:last-child {
+  border-bottom: none;
+}
+
+.ps-row.highlight {
+  background: #f8f9fa;
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.ps-row .positive {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.ps-row .negative {
+  color: #c62828;
+  font-weight: 600;
+}
+
 @media (max-width: 600px) {
   .backtest-type-tabs {
     flex-direction: column;
@@ -4151,5 +4678,13 @@ footer {
 
   .monte-carlo-stats {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .grade-success-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .period-cards {
+    grid-template-columns: 1fr;
   }
 }

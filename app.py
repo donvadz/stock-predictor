@@ -54,7 +54,9 @@ from composite_backtest import (
 from composite_backtest_rigorous import (
     run_portfolio_simulation,
     run_monte_carlo_significance,
-    run_rigorous_backtest,
+)
+from composite_backtest_grades import (
+    run_walk_forward_grade_validation,
 )
 from config import COMPOSITE_STOCK_LIST
 
@@ -1063,14 +1065,16 @@ def get_composite_scores(
 
 def _get_adaptive_methodology(horizon_months: int) -> dict:
     """Get methodology description with adaptive weights based on horizon."""
+    # NOTE: Only 12-month weights validated via factor analysis
     if horizon_months <= 3:
         weights = {"growth": 40, "quality": 20, "financial_strength": 15, "valuation": 25}
         profile = "Short-term (momentum-focused)"
         description = "Higher weight on growth/momentum for short-term picks"
     elif horizon_months <= 12:
-        weights = {"growth": 30, "quality": 30, "financial_strength": 20, "valuation": 20}
-        profile = "Medium-term (balanced)"
-        description = "Balanced approach for 1-year horizon"
+        # VALIDATED via factor analysis - quality is only positive predictor
+        weights = {"growth": 20, "quality": 40, "financial_strength": 20, "valuation": 20}
+        profile = "Medium-term (quality-focused)"
+        description = "Quality-focused based on factor correlation analysis"
     elif horizon_months <= 60:
         weights = {"growth": 25, "quality": 35, "financial_strength": 25, "valuation": 15}
         profile = "Long-term (quality-focused)"
@@ -1476,39 +1480,53 @@ def composite_significance_test(
     return result
 
 
-@app.get("/composite-backtest/rigorous")
-def composite_rigorous_backtest(
-    stocks_count: int = Query(150, ge=50, le=300, description="Universe size"),
-    years: int = Query(2, ge=1, le=10, description="Simulation years (1-10)"),
+@app.get("/composite-backtest/grade-validation")
+def composite_grade_validation(
+    horizon_months: int = Query(12, ge=3, le=120, description="Holding period to test (3, 6, 12, 24, 60, or 120 months)"),
+    stocks_count: int = Query(200, ge=50, le=700, description="Number of stocks to test"),
 ):
     """
-    Run comprehensive rigorous backtest.
+    Walk-forward grade validation test.
 
-    Combines:
-    1. Walk-forward portfolio simulation (quarterly rebalancing)
-    2. Monte Carlo significance test (500 simulations)
+    This is the TRUE test of whether the grading system works:
+    1. Goes back to historical periods (10Y, 5Y, 2Y, 1Y ago)
+    2. At each point, calculates grades using ONLY data available then
+    3. Tracks actual returns of A/B graded stocks over the horizon
+    4. Reports: "Did A-grade stocks actually deliver expected returns?"
 
-    This provides the strongest evidence for whether the scoring system works:
-    - Portfolio alpha vs SPY benchmark
-    - Statistical significance (p-value)
-    - Risk-adjusted returns (Sharpe ratio)
-    - Maximum drawdown
+    This validates the fundamental premise: "Do our grades predict returns?"
 
     Args:
-        stocks_count: Number of stocks in universe (50-300)
-        years: Simulation period in years (1-10). Use 2-5 for normal testing,
-               5-10 for long-term crisis/recovery analysis.
+        horizon_months: Holding period (3=quarterly, 6=semi-annual, 12=annual, 24=2-year, 60=5-year, 120=10-year)
+        stocks_count: Number of stocks to include in universe (use 679 for full S&P 500)
 
-    WARNING: This is computationally intensive. 2 years takes ~2-5 minutes,
-    longer periods take proportionally longer.
+    Returns:
+        - Success rate by grade (A, B, C, D, F)
+        - Average actual vs expected returns
+        - Verdict: VALIDATED, PARTIALLY VALIDATED, WEAK, or NOT VALIDATED
+        - Period-by-period breakdown
     """
+    valid_horizons = [3, 6, 12, 24, 60, 120]
+    if horizon_months not in valid_horizons:
+        horizon_months = 12
+
+    cache_key = f"grade-validation:{stocks_count}:{horizon_months}m"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     stocks = COMPOSITE_STOCK_LIST[:stocks_count]
 
-    result = run_rigorous_backtest(stocks=stocks, simulation_years=years)
+    result = run_walk_forward_grade_validation(
+        stocks=stocks,
+        horizon_months=horizon_months,
+        max_workers=4,
+    )
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
+    prediction_cache.set(cache_key, result, 21600)  # 6 hour cache
     return result
 
 
@@ -1525,6 +1543,15 @@ class JobStartRequest(BaseModel):
     min_signals: int = 4
     tier1_only: bool = True
     period: Optional[str] = None
+    # Composite ranking parameters
+    horizon: int = 24
+    sector: Optional[str] = None
+    grade: Optional[str] = None
+    limit: int = 50
+    offset: int = 0
+    # Grade validation parameters
+    stocks_count: int = 200
+    horizon_months: int = 12
 
 
 # Worker functions for each job type
@@ -2015,6 +2042,187 @@ def _run_optimal_scan_job(job: Job, days: int) -> dict:
     return response
 
 
+def _run_composite_ranking_job(
+    job: Job,
+    horizon_months: int = 24,
+    sector: Optional[str] = None,
+    grade: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Run composite ranking with progress tracking and cancellation support."""
+
+    # Check cache first
+    cache_key = f"composite-scores:{sector}:{grade}:{horizon_months}m:{limit}:{offset}"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        job.progress = 100
+        job.progress_message = "Loaded from cache"
+        return cached
+
+    total_stocks = len(COMPOSITE_STOCK_LIST)
+    job.progress_message = f"Starting analysis of {total_stocks} stocks..."
+
+    # Progress callback for rank_all_stocks
+    def progress_callback(current: int, total: int, ticker: str, phase: str):
+        if phase == "fundamentals":
+            # Fundamentals fetch is about 60% of the work
+            pct = int((current / total) * 60)
+            job.progress = pct
+            job.progress_message = f"Fetching fundamentals: {current}/{total} ({ticker})"
+        elif phase == "returns":
+            # Returns fetch is about 25% of the work
+            pct = 60 + int((current / total) * 25)
+            job.progress = pct
+            job.progress_message = f"Fetching returns: {current}/{total} ({ticker})"
+        else:  # scoring
+            # Scoring is about 15% of the work
+            pct = 85 + int((current / total) * 15)
+            job.progress = pct
+            job.progress_message = f"Calculating scores: {current}/{total}"
+
+    # Cancel check
+    def cancel_check():
+        return job.cancelled
+
+    # Get all rankings with specified horizon
+    if sector:
+        all_ranked = get_sector_rankings(sector, horizon_months=horizon_months)
+    else:
+        all_ranked = rank_all_stocks(
+            horizon_months=horizon_months,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check
+        )
+
+    if all_ranked is None:
+        return None  # Cancelled
+
+    if not all_ranked:
+        raise HTTPException(status_code=500, detail="Failed to calculate composite scores")
+
+    # Filter by grade if specified
+    if grade:
+        all_ranked = [s for s in all_ranked if s.get("grade") == grade.upper()]
+
+    total_count = len(all_ranked)
+
+    # Apply pagination
+    paginated = all_ranked[offset:offset + limit]
+
+    # Get available sectors for filtering
+    sectors = get_available_sectors(horizon_months=horizon_months)
+
+    # Calculate grade distribution
+    grade_counts = {}
+    for stock in all_ranked:
+        g = stock.get("grade", "F")
+        grade_counts[g] = grade_counts.get(g, 0) + 1
+
+    # Generate period label
+    if horizon_months == 1:
+        period_label = "30 days"
+    elif horizon_months < 12:
+        period_label = f"{horizon_months} months"
+    elif horizon_months == 12:
+        period_label = "1 year"
+    else:
+        period_label = f"{horizon_months // 12} years"
+
+    response = {
+        "total_stocks": total_count,
+        "universe_size": len(COMPOSITE_STOCK_LIST),
+        "horizon_months": horizon_months,
+        "horizon_label": period_label,
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "sector": sector,
+            "grade": grade,
+            "horizon_months": horizon_months,
+        },
+        "available_sectors": sectors,
+        "grade_distribution": grade_counts,
+        "stocks": paginated,
+        "methodology": _get_adaptive_methodology(horizon_months),
+    }
+
+    prediction_cache.set(cache_key, response, 21600)  # 6 hour cache
+    job.progress = 100
+    job.progress_message = f"Ranked {total_count} stocks"
+
+    return response
+
+
+def _run_grade_validation_job(
+    job: Job,
+    horizon_months: int = 12,
+    stocks_count: int = 200,
+) -> Optional[dict]:
+    """Run walk-forward grade validation with progress tracking and cancellation support."""
+
+    valid_horizons = [3, 6, 12, 24, 60, 120]
+    if horizon_months not in valid_horizons:
+        horizon_months = 12
+
+    stocks = COMPOSITE_STOCK_LIST[:stocks_count]
+
+    # Generate period label for messages
+    if horizon_months == 3:
+        period_label = "quarterly"
+    elif horizon_months == 6:
+        period_label = "6-month"
+    elif horizon_months == 12:
+        period_label = "1-year"
+    else:
+        period_label = "2-year"
+
+    # Check cache first
+    cache_key = f"grade-validation-job:{stocks_count}:{horizon_months}m"
+    cached = prediction_cache.get(cache_key)
+    if cached is not None:
+        job.progress = 100
+        job.progress_message = "Loaded from cache"
+        return cached
+
+    job.progress_message = f"Starting {period_label} grade validation..."
+
+    # Progress callback
+    def progress_callback(current: int, total: int, message: str = ""):
+        if job.cancelled:
+            return False  # Signal cancellation
+
+        pct = int((current / max(total, 1)) * 95)
+        job.progress = min(pct, 95)
+        job.progress_message = message or f"Processing {current}/{total}..."
+
+        return not job.cancelled
+
+    if job.cancelled:
+        return None
+
+    result = run_walk_forward_grade_validation(
+        stocks=stocks,
+        horizon_months=horizon_months,
+        max_workers=4,
+        progress_callback=progress_callback,
+    )
+
+    if job.cancelled:
+        return None
+
+    if result and "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    if result:
+        prediction_cache.set(cache_key, result, 21600)  # 6 hour cache
+
+    job.progress = 100
+    job.progress_message = f"Completed {period_label} grade validation"
+
+    return result
+
+
 # Job type to worker function mapping
 JOB_WORKERS = {
     "screener": lambda job, params: _run_screener_job(
@@ -2049,6 +2257,19 @@ JOB_WORKERS = {
     "optimal-scan": lambda job, params: _run_optimal_scan_job(
         job,
         params.get("days", 20),
+    ),
+    "composite-ranking": lambda job, params: _run_composite_ranking_job(
+        job,
+        params.get("horizon", 24),
+        params.get("sector"),
+        params.get("grade"),
+        params.get("limit", 50),
+        params.get("offset", 0),
+    ),
+    "grade-validation": lambda job, params: _run_grade_validation_job(
+        job,
+        params.get("horizon_months", 12),
+        params.get("stocks_count", 200),
     ),
 }
 

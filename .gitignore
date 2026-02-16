@@ -13,6 +13,9 @@ venv/
 .vscode/
 .idea/
 
+# Cache
+.cache/
+
 # Frontend (has its own .gitignore but just in case)
 frontend/node_modules/
 frontend/dist/

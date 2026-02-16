@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
+import useJob from '../hooks/useJob'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -20,9 +21,6 @@ const getScoreColor = (score) => {
 }
 
 function CompositeRanking() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
   const [expandedRow, setExpandedRow] = useState(null)
   const [sectorFilter, setSectorFilter] = useState('')
   const [gradeFilter, setGradeFilter] = useState('')
@@ -30,73 +28,54 @@ function CompositeRanking() {
   const [limit, setLimit] = useState(50)
   const [offset, setOffset] = useState(0)
   const [hasStarted, setHasStarted] = useState(false)
-  const abortControllerRef = useRef(null)
 
-  const fetchData = async () => {
-    // Cancel any existing request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
+  // Use job-based API for progress tracking
+  const {
+    isLoading: loading,
+    result: data,
+    error,
+    progress,
+    progressMessage,
+    elapsedSeconds,
+    startJob,
+    cancelJob,
+    reset,
+  } = useJob('composite-ranking')
 
-    // Create new abort controller
-    abortControllerRef.current = new AbortController()
-
-    setLoading(true)
-    setError(null)
-
-    try {
-      let url = `${API_URL}/composite-scores?limit=${limit}&offset=${offset}&horizon=${horizonMonths}`
-      if (sectorFilter) url += `&sector=${encodeURIComponent(sectorFilter)}`
-      if (gradeFilter) url += `&grade=${gradeFilter}`
-
-      const response = await fetch(url, {
-        signal: abortControllerRef.current.signal
-      })
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const result = await response.json()
-      setData(result)
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        // Request was cancelled, don't set error
-        return
-      }
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+  const formatTime = (seconds) => {
+    if (seconds < 60) return `${seconds}s`
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}m ${secs}s`
   }
 
-  const handleRun = () => {
+  const handleRun = async () => {
     setHasStarted(true)
-    fetchData()
-  }
-
-  const handleCancel = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
+    try {
+      await startJob('composite-ranking', {
+        horizon: horizonMonths,
+        sector: sectorFilter || null,
+        grade: gradeFilter || null,
+        limit,
+        offset,
+      })
+    } catch (err) {
+      console.error('Failed to start job:', err)
     }
-    setLoading(false)
-    setHasStarted(false)
-    setData(null)
   }
 
-  // Only auto-fetch when filters/pagination change IF user has already started
+  const handleCancel = async () => {
+    await cancelJob()
+    reset()
+    setHasStarted(false)
+  }
+
+  // When filters change and we have data, re-run the job
   useEffect(() => {
-    if (hasStarted && data) {
-      fetchData()
+    if (hasStarted && data && !loading) {
+      handleRun()
     }
   }, [sectorFilter, gradeFilter, horizonMonths, limit, offset])
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort()
-      }
-    }
-  }, [])
 
   const toggleExpand = (ticker) => {
     setExpandedRow(expandedRow === ticker ? null : ticker)
@@ -142,6 +121,38 @@ function CompositeRanking() {
     return `$${value.toLocaleString()}`
   }
 
+  // Estimate bid-ask spread based on market cap and liquidity
+  // For Trading 212/commission-free brokers, spread is the main cost
+  const estimateSpread = (marketCap) => {
+    if (!marketCap) return { spread: 0.10, tier: 'Unknown', color: '#888' }
+
+    if (marketCap >= 200e9) {
+      // Mega cap (>$200B): AAPL, MSFT, etc. - very tight spreads
+      return { spread: 0.02, tier: 'Mega Cap', color: '#4caf50' }
+    } else if (marketCap >= 50e9) {
+      // Large cap ($50B-$200B): Still very liquid
+      return { spread: 0.03, tier: 'Large Cap', color: '#8bc34a' }
+    } else if (marketCap >= 10e9) {
+      // Mid-large cap ($10B-$50B): Good liquidity
+      return { spread: 0.05, tier: 'Mid-Large', color: '#ffc107' }
+    } else if (marketCap >= 2e9) {
+      // Mid cap ($2B-$10B): Moderate spreads
+      return { spread: 0.10, tier: 'Mid Cap', color: '#ff9800' }
+    } else {
+      // Small cap (<$2B): Wider spreads
+      return { spread: 0.20, tier: 'Small Cap', color: '#f44336' }
+    }
+  }
+
+  // Calculate round-trip cost (buy + sell)
+  const calculateTradingCost = (marketCap, investmentAmount = 1000) => {
+    const { spread } = estimateSpread(marketCap)
+    // Round trip = buy spread + sell spread
+    const roundTripPct = spread * 2
+    const costAmount = (investmentAmount * roundTripPct) / 100
+    return { roundTripPct, costAmount }
+  }
+
   return (
     <div className="card composite-ranking-card">
       <div className="card-header-badge">
@@ -153,6 +164,7 @@ function CompositeRanking() {
         {data?.methodology?.weight_profile && (
           <span className="current-profile"> Currently using: <strong>{data.methodology.weight_profile}</strong></span>
         )}
+        {data && <span className="spread-note"> Click any stock to see trading costs (spread estimates for T212).</span>}
       </p>
 
       {/* Horizon Selector */}
@@ -197,8 +209,7 @@ function CompositeRanking() {
           </button>
         ) : loading ? (
           <button onClick={handleCancel} className="cancel-ranking-btn">
-            <span className="spinner"></span>
-            Cancel
+            Cancel ({progress}%)
           </button>
         ) : (
           <div className="ranking-actions">
@@ -229,11 +240,11 @@ function CompositeRanking() {
             <label>Grade</label>
             <select value={gradeFilter} onChange={handleGradeChange}>
               <option value="">All Grades</option>
-              <option value="A">A (80-100)</option>
-              <option value="B">B (65-79)</option>
-              <option value="C">C (50-64)</option>
-              <option value="D">D (35-49)</option>
-              <option value="F">F (0-34)</option>
+              <option value="A">A (75-100)</option>
+              <option value="B">B (60-74)</option>
+              <option value="C">C (45-59)</option>
+              <option value="D">D (30-44)</option>
+              <option value="F">F (0-29)</option>
             </select>
           </div>
         </div>
@@ -271,12 +282,28 @@ function CompositeRanking() {
         </div>
       )}
 
-      {/* Loading state */}
+      {/* Loading state with progress bar */}
       {loading && (
-        <div className="loading-text">
-          <span className="spinner"></span>
-          <p>Loading rankings...</p>
-          <p className="loading-note">Fetching fundamentals from Yahoo Finance... This may take 30-60 seconds.</p>
+        <div className="job-progress-container">
+          <div className="job-progress-header">
+            <span className="job-progress-text">{progressMessage || 'Starting analysis...'}</span>
+            <span className="job-progress-percent">{progress}%</span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <div className="progress-stats">
+            <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+            {progress > 0 && progress < 100 && (
+              <span>Est. remaining: ~{formatTime(Math.max(0, Math.round((elapsedSeconds / Math.max(progress, 1)) * (100 - progress))))}</span>
+            )}
+          </div>
+          <p className="loading-note">
+            This runs in the background - you can close this tab and return later.
+          </p>
         </div>
       )}
 
@@ -494,6 +521,41 @@ function CompositeRanking() {
                                   </div>
                                 </div>
                               </div>
+
+                              {/* Trading Costs - For retail investors */}
+                              <div className="expanded-section trading-costs-section">
+                                <h4>Trading Costs (Trading 212)</h4>
+                                {(() => {
+                                  const spreadInfo = estimateSpread(stock.raw_fundamentals?.market_cap)
+                                  const costs = calculateTradingCost(stock.raw_fundamentals?.market_cap, 1000)
+                                  return (
+                                    <div className="trading-costs-grid">
+                                      <div className="cost-info-item">
+                                        <span className="cost-label">Liquidity Tier</span>
+                                        <span className="cost-value" style={{ color: spreadInfo.color }}>
+                                          {spreadInfo.tier}
+                                        </span>
+                                      </div>
+                                      <div className="cost-info-item">
+                                        <span className="cost-label">Est. Spread</span>
+                                        <span className="cost-value">{spreadInfo.spread.toFixed(2)}%</span>
+                                      </div>
+                                      <div className="cost-info-item">
+                                        <span className="cost-label">Round-Trip Cost</span>
+                                        <span className="cost-value negative">{costs.roundTripPct.toFixed(2)}%</span>
+                                      </div>
+                                      <div className="cost-info-item">
+                                        <span className="cost-label">Cost on £1,000</span>
+                                        <span className="cost-value negative">£{costs.costAmount.toFixed(2)}</span>
+                                      </div>
+                                      <div className="cost-note">
+                                        <p>Commission: £0 (T212 free trades)</p>
+                                        <p>FX fee: 0.15% for USD stocks (not included above)</p>
+                                      </div>
+                                    </div>
+                                  )
+                                })()}
+                              </div>
                             </div>
                           </div>
                         </td>
@@ -575,8 +637,8 @@ function CompositeRanking() {
           </>
         )}
         <p className="methodology-note">
-          Scores are percentile-ranked across the entire stock universe.
-          Higher scores indicate stronger fundamentals for the selected investment horizon.
+          Scores use absolute thresholds based on empirically-derived quality standards.
+          Higher scores indicate objectively stronger fundamentals - same stock scores consistently over time.
         </p>
       </div>
 
@@ -588,17 +650,39 @@ function CompositeRanking() {
 
 function CompositeBacktest() {
   const [showBacktest, setShowBacktest] = useState(false)
-  const [backtestType, setBacktestType] = useState('basic') // 'basic' or 'rigorous'
+  const [backtestType, setBacktestType] = useState('basic') // 'basic' or 'grade-validation'
   const [backtestData, setBacktestData] = useState(null)
-  const [rigorousData, setRigorousData] = useState(null)
-  const [backtestLoading, setBacktestLoading] = useState(false)
-  const [backtestError, setBacktestError] = useState(null)
+  const [basicLoading, setBasicLoading] = useState(false)
+  const [basicError, setBasicError] = useState(null)
   const [returnPeriod, setReturnPeriod] = useState('90d')
-  const [rigorousYears, setRigorousYears] = useState(2)
+
+  // Grade validation state
+  const [gradeValidationHorizon, setGradeValidationHorizon] = useState(12)
+  const [gradeValidationStocks, setGradeValidationStocks] = useState(200)
+
+  // Use job-based API for grade validation (long-running)
+  const {
+    isLoading: gradeValidationLoading,
+    result: gradeValidationData,
+    error: gradeValidationError,
+    progress: gradeValidationProgress,
+    progressMessage: gradeValidationProgressMessage,
+    elapsedSeconds: gradeValidationElapsed,
+    startJob: startGradeValidationJob,
+    cancelJob: cancelGradeValidationJob,
+    reset: resetGradeValidation,
+  } = useJob('grade-validation')
+
+  const formatTime = (seconds) => {
+    if (seconds < 60) return `${seconds}s`
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}m ${secs}s`
+  }
 
   const runBacktest = async () => {
-    setBacktestLoading(true)
-    setBacktestError(null)
+    setBasicLoading(true)
+    setBasicError(null)
 
     try {
       const response = await fetch(
@@ -610,46 +694,60 @@ function CompositeBacktest() {
       const result = await response.json()
       setBacktestData(result)
     } catch (err) {
-      setBacktestError(err.message)
+      setBasicError(err.message)
     } finally {
-      setBacktestLoading(false)
+      setBasicLoading(false)
     }
   }
 
-  const runRigorousBacktest = async () => {
-    setBacktestLoading(true)
-    setBacktestError(null)
-
+  const runGradeValidation = async () => {
     try {
-      const response = await fetch(
-        `${API_URL}/composite-backtest/rigorous?stocks_count=150&years=${rigorousYears}`
-      )
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const result = await response.json()
-      setRigorousData(result)
+      await startGradeValidationJob('grade-validation', {
+        horizon_months: gradeValidationHorizon,
+        stocks_count: gradeValidationStocks,
+      })
     } catch (err) {
-      setBacktestError(err.message)
-    } finally {
-      setBacktestLoading(false)
+      console.error('Failed to start grade validation:', err)
     }
   }
+
+  const handleCancelGradeValidation = async () => {
+    await cancelGradeValidationJob()
+    resetGradeValidation()
+  }
+
+  // Clear grade validation results when parameters change
+  useEffect(() => {
+    if (gradeValidationData && !gradeValidationLoading) {
+      resetGradeValidation()
+      localStorage.removeItem('job-grade-validation')
+    }
+  }, [gradeValidationHorizon, gradeValidationStocks])
 
   const getVerdictColor = (verdict) => {
     switch (verdict) {
       case 'VALIDATED': return '#2e7d32'
       case 'STRONG': return '#2e7d32'
       case 'STRONG ALPHA': return '#2e7d32'
+      case 'STRONG PICKER': return '#2e7d32'
+      case 'EXCELLENT': return '#2e7d32'
       case 'POSITIVE ALPHA': return '#388e3c'
+      case 'GOOD': return '#388e3c'
+      case 'GOOD PICKER': return '#388e3c'
+      case 'PARTIALLY VALIDATED': return '#1565c0'
       case 'PROMISING': return '#1565c0'
+      case 'FAIR': return '#1565c0'
       case 'MODERATE': return '#f57f17'
+      case 'MARGINAL': return '#f57f17'
       case 'MARGINAL ALPHA': return '#f57f17'
       case 'WEAK': return '#e65100'
+      case 'NEEDS WORK': return '#e65100'
+      case 'NEEDS IMPROVEMENT': return '#c62828'
+      case 'NOT VALIDATED': return '#c62828'
       case 'HIGHLY SIGNIFICANT': return '#2e7d32'
       case 'SIGNIFICANT': return '#388e3c'
       case 'MARGINALLY SIGNIFICANT': return '#f57f17'
-      default: return '#c62828'
+      default: return '#888'  // Gray for unknown
     }
   }
 
@@ -678,10 +776,10 @@ function CompositeBacktest() {
               Basic Analysis
             </button>
             <button
-              className={`backtest-type-tab ${backtestType === 'rigorous' ? 'active' : ''}`}
-              onClick={() => setBacktestType('rigorous')}
+              className={`backtest-type-tab ${backtestType === 'grade-validation' ? 'active' : ''}`}
+              onClick={() => setBacktestType('grade-validation')}
             >
-              Rigorous Test
+              Grade Validation
             </button>
           </div>
 
@@ -708,10 +806,10 @@ function CompositeBacktest() {
 
                 <button
                   onClick={runBacktest}
-                  disabled={backtestLoading}
+                  disabled={basicLoading}
                   className="run-backtest-btn"
                 >
-                  {backtestLoading ? (
+                  {basicLoading ? (
                     <>
                       <span className="spinner"></span>
                       Running...
@@ -724,84 +822,22 @@ function CompositeBacktest() {
             </>
           )}
 
-          {/* Rigorous Backtest */}
-          {backtestType === 'rigorous' && (
-            <>
-              <div className="backtest-type-description rigorous">
-                <h5>Walk-Forward Portfolio Simulation + Statistical Significance Test</h5>
-                <ul>
-                  <li><strong>Portfolio Simulation:</strong> Simulates buying top 20 stocks, rebalancing quarterly</li>
-                  <li><strong>Point-in-Time Scoring:</strong> Uses only data available at each decision point (minimizes look-ahead bias)</li>
-                  <li><strong>Benchmark Comparison:</strong> Measures alpha vs SPY buy-and-hold</li>
-                  <li><strong>Monte Carlo Test:</strong> Compares to 500 random portfolios for statistical significance</li>
-                  <li><strong>Long-Term Focus:</strong> Best for finding quality companies during cautious/crisis market periods</li>
-                </ul>
-              </div>
-
-              <div className="backtest-controls">
-                <div className="period-selector">
-                  <span className="selector-label">Simulation Period:</span>
-                  <div className="period-buttons">
-                    {[
-                      { value: 2, label: '2 Years' },
-                      { value: 5, label: '5 Years' },
-                      { value: 10, label: '10 Years' },
-                    ].map(({ value, label }) => (
-                      <button
-                        key={value}
-                        className={`period-btn ${rigorousYears === value ? 'active' : ''}`}
-                        onClick={() => setRigorousYears(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  onClick={runRigorousBacktest}
-                  disabled={backtestLoading}
-                  className="run-backtest-btn rigorous"
-                >
-                  {backtestLoading ? (
-                    <>
-                      <span className="spinner"></span>
-                      Running {rigorousYears}Y Rigorous Test...
-                    </>
-                  ) : (
-                    `Run ${rigorousYears}-Year Rigorous Backtest`
-                  )}
-                </button>
-              </div>
-
-              <p className="loading-note" style={{ marginTop: '8px' }}>
-                {rigorousYears <= 2
-                  ? 'This test takes 2-5 minutes as it fetches historical data and runs simulations.'
-                  : rigorousYears <= 5
-                  ? 'This test takes 5-10 minutes due to extended historical data requirements.'
-                  : 'This test takes 10-15 minutes to analyze a full decade of market data.'
-                }
-              </p>
-            </>
-          )}
-
-          {backtestLoading && (
+          {/* Basic backtest loading */}
+          {basicLoading && (
             <div className="loading-text">
+              <span className="spinner"></span>
               <p className="loading-note">
-                {backtestType === 'rigorous'
-                  ? `Running ${rigorousYears}-year portfolio simulation and Monte Carlo analysis...`
-                  : `Analyzing ${returnPeriod} returns for 200 stocks...`
-                }
+                {`Analyzing ${returnPeriod} returns for 200 stocks...`}
               </p>
             </div>
           )}
 
-          {backtestError && (
-            <div className="error">Backtest failed: {backtestError}</div>
+          {basicError && (
+            <div className="error">Backtest failed: {basicError}</div>
           )}
 
           {/* Basic Backtest Results */}
-          {backtestType === 'basic' && backtestData && !backtestLoading && (
+          {backtestType === 'basic' && backtestData && !basicLoading && (
             <div className="backtest-results">
               {/* Verdict Banner */}
               <div
@@ -950,227 +986,287 @@ function CompositeBacktest() {
             </div>
           )}
 
-          {/* Rigorous Backtest Results */}
-          {backtestType === 'rigorous' && rigorousData && !backtestLoading && (
-            <div className="backtest-results rigorous-results">
-              {/* Simulation Period Banner */}
-              <div className="simulation-period-banner">
-                <span className="period-label">Simulation Period:</span>
-                <span className="period-value">{rigorousData.simulation_years || 2} Years</span>
-                <span className="period-dates">({rigorousData.portfolio_simulation?.period})</span>
+          {/* Grade Validation Test */}
+          {backtestType === 'grade-validation' && (
+            <>
+              <div className="backtest-type-description">
+                <p>
+                  <strong>True test of the grading system:</strong> Goes back 10, 5, 2, and 1 years ago, calculates grades
+                  using only data available at each point, then tracks if A/B grade stocks actually delivered expected returns.
+                </p>
               </div>
 
-              {/* Overall Verdict */}
-              <div
-                className="backtest-verdict"
-                style={{
-                  borderColor: getVerdictColor(rigorousData.overall_verdict),
-                  background: `${getVerdictColor(rigorousData.overall_verdict)}15`
-                }}
-              >
-                <span className="verdict-label">Overall Result:</span>
-                <span
-                  className="verdict-value"
-                  style={{ color: getVerdictColor(rigorousData.overall_verdict) }}
-                >
-                  {rigorousData.overall_verdict}
-                </span>
-                <span className="verdict-detail">{rigorousData.overall_detail}</span>
-              </div>
-
-              {/* Key Metrics Summary */}
-              <div className="rigorous-summary">
-                <div className="summary-card">
-                  <span className="summary-label">Alpha vs SPY</span>
-                  <span className={`summary-value ${rigorousData.key_metrics?.alpha_vs_spy >= 0 ? 'positive' : 'negative'}`}>
-                    {rigorousData.key_metrics?.alpha_vs_spy >= 0 ? '+' : ''}
-                    {rigorousData.key_metrics?.alpha_vs_spy}%
-                  </span>
-                </div>
-                <div className="summary-card">
-                  <span className="summary-label">Sharpe Ratio</span>
-                  <span className="summary-value">
-                    {rigorousData.key_metrics?.sharpe_ratio}
-                  </span>
-                </div>
-                <div className="summary-card">
-                  <span className="summary-label">Statistical Significance</span>
-                  <span
-                    className="summary-value"
-                    style={{ color: getVerdictColor(rigorousData.key_metrics?.statistical_significance) }}
+              <div className="backtest-controls">
+                <div className="filter-group">
+                  <label>Holding Period</label>
+                  <select
+                    value={gradeValidationHorizon}
+                    onChange={(e) => setGradeValidationHorizon(Number(e.target.value))}
                   >
-                    {rigorousData.key_metrics?.statistical_significance}
-                  </span>
+                    <option value={3}>3 Months (Quarterly)</option>
+                    <option value={6}>6 Months (Semi-Annual)</option>
+                    <option value={12}>12 Months (Annual)</option>
+                    <option value={24}>2 Years</option>
+                    <option value={60}>5 Years</option>
+                    <option value={120}>10 Years</option>
+                  </select>
                 </div>
-                <div className="summary-card">
-                  <span className="summary-label">P-Value</span>
-                  <span className={`summary-value ${rigorousData.key_metrics?.p_value < 0.05 ? 'positive' : ''}`}>
-                    {rigorousData.key_metrics?.p_value}
-                  </span>
+                <div className="filter-group">
+                  <label>Universe Size</label>
+                  <select
+                    value={gradeValidationStocks}
+                    onChange={(e) => setGradeValidationStocks(Number(e.target.value))}
+                  >
+                    <option value={100}>100 stocks (faster)</option>
+                    <option value={200}>200 stocks (balanced)</option>
+                    <option value={300}>300 stocks</option>
+                    <option value={500}>500 stocks</option>
+                    <option value={679}>Full S&P 500 (679 stocks)</option>
+                  </select>
                 </div>
+                {gradeValidationLoading ? (
+                  <button
+                    onClick={handleCancelGradeValidation}
+                    className="cancel-backtest-btn"
+                  >
+                    Cancel ({gradeValidationProgress}%)
+                  </button>
+                ) : (
+                  <button
+                    onClick={runGradeValidation}
+                    className="run-backtest-btn"
+                  >
+                    Run Grade Validation
+                  </button>
+                )}
               </div>
 
-              {/* Portfolio Simulation Results */}
-              {rigorousData.portfolio_simulation && (
-                <div className="portfolio-section">
-                  <h5>Portfolio Simulation</h5>
-                  <p className="section-note">{rigorousData.portfolio_simulation.period}</p>
-
-                  <div className="portfolio-metrics">
-                    <div className="metric-row">
-                      <span className="metric-name">Initial Capital</span>
-                      <span className="metric-val">
-                        ${rigorousData.portfolio_simulation.performance?.initial_capital?.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="metric-row">
-                      <span className="metric-name">Final Portfolio Value</span>
-                      <span className="metric-val">
-                        ${rigorousData.portfolio_simulation.performance?.final_portfolio_value?.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="metric-row">
-                      <span className="metric-name">Final Benchmark (SPY)</span>
-                      <span className="metric-val">
-                        ${rigorousData.portfolio_simulation.performance?.final_benchmark_value?.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="metric-row highlight">
-                      <span className="metric-name">Total Return</span>
-                      <span className={`metric-val ${rigorousData.portfolio_simulation.performance?.total_return >= 0 ? 'positive' : 'negative'}`}>
-                        {rigorousData.portfolio_simulation.performance?.total_return >= 0 ? '+' : ''}
-                        {rigorousData.portfolio_simulation.performance?.total_return}%
-                      </span>
-                    </div>
-                    <div className="metric-row highlight">
-                      <span className="metric-name">Benchmark Return</span>
-                      <span className={`metric-val ${rigorousData.portfolio_simulation.performance?.benchmark_return >= 0 ? 'positive' : 'negative'}`}>
-                        {rigorousData.portfolio_simulation.performance?.benchmark_return >= 0 ? '+' : ''}
-                        {rigorousData.portfolio_simulation.performance?.benchmark_return}%
-                      </span>
-                    </div>
-                    <div className="metric-row primary">
-                      <span className="metric-name">Alpha (Outperformance)</span>
-                      <span className={`metric-val ${rigorousData.portfolio_simulation.performance?.alpha >= 0 ? 'positive' : 'negative'}`}>
-                        {rigorousData.portfolio_simulation.performance?.alpha >= 0 ? '+' : ''}
-                        {rigorousData.portfolio_simulation.performance?.alpha}%
-                      </span>
-                    </div>
+              {/* Progress indicator */}
+              {gradeValidationLoading && (
+                <div className="job-progress-container" style={{ marginTop: '16px' }}>
+                  <div className="job-progress-header">
+                    <span className="job-progress-text">{gradeValidationProgressMessage || 'Starting grade validation...'}</span>
+                    <span className="job-progress-percent">{gradeValidationProgress}%</span>
                   </div>
-
-                  <div className="risk-metrics">
-                    <h6>Risk Metrics</h6>
-                    <div className="risk-row">
-                      <span>Win Rate:</span>
-                      <span>{rigorousData.portfolio_simulation.risk_metrics?.win_rate}%</span>
-                    </div>
-                    <div className="risk-row">
-                      <span>Max Drawdown:</span>
-                      <span className="negative">-{rigorousData.portfolio_simulation.risk_metrics?.max_drawdown}%</span>
-                    </div>
-                    <div className="risk-row">
-                      <span>Sharpe Ratio:</span>
-                      <span>{rigorousData.portfolio_simulation.risk_metrics?.sharpe_ratio}</span>
-                    </div>
+                  <div className="progress-bar">
+                    <div
+                      className="progress-bar-fill"
+                      style={{ width: `${gradeValidationProgress}%` }}
+                    />
                   </div>
-
-                  {/* Equity Curve */}
-                  {rigorousData.portfolio_simulation.equity_curve && (
-                    <div className="equity-curve">
-                      <h6>Equity Curve</h6>
-                      <div className="equity-table">
-                        <div className="equity-header">
-                          <span>Date</span>
-                          <span>Portfolio</span>
-                          <span>Benchmark</span>
-                        </div>
-                        {rigorousData.portfolio_simulation.equity_curve.slice(-6).map((point, i) => (
-                          <div key={i} className="equity-row">
-                            <span>{point.date}</span>
-                            <span>${point.portfolio?.toLocaleString()}</span>
-                            <span>${point.benchmark?.toLocaleString()}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <div className="progress-stats">
+                    <span>Elapsed: {formatTime(gradeValidationElapsed)}</span>
+                    {gradeValidationProgress > 0 && gradeValidationProgress < 100 && (
+                      <span>Est. remaining: ~{formatTime(Math.max(0, Math.round((gradeValidationElapsed / Math.max(gradeValidationProgress, 1)) * (100 - gradeValidationProgress))))}</span>
+                    )}
+                  </div>
+                  <p className="loading-note">
+                    This runs in the background - you can close this tab and return later.
+                  </p>
                 </div>
               )}
 
-              {/* Monte Carlo Results */}
-              {rigorousData.statistical_significance && (
-                <div className="monte-carlo-section">
-                  <h5>Statistical Significance Test</h5>
-                  <p className="section-note">
-                    Compared to {rigorousData.statistical_significance.num_simulations} randomly selected portfolios
-                  </p>
+              {!gradeValidationLoading && !gradeValidationData && (
+                <p className="loading-note" style={{ marginTop: '8px' }}>
+                  Estimated time: ~{
+                    // Base time by stocks
+                    (gradeValidationStocks <= 100 ? 2 : gradeValidationStocks <= 200 ? 4 : gradeValidationStocks <= 300 ? 6 : gradeValidationStocks <= 500 ? 10 : 15) *
+                    // Multiplier for longer horizons (need more historical data)
+                    (gradeValidationHorizon <= 24 ? 1 : gradeValidationHorizon <= 60 ? 1.5 : 2)
+                  } minutes for {gradeValidationStocks} stocks over {
+                    gradeValidationHorizon === 3 ? '3 months' :
+                    gradeValidationHorizon === 6 ? '6 months' :
+                    gradeValidationHorizon === 12 ? '1 year' :
+                    gradeValidationHorizon === 24 ? '2 years' :
+                    gradeValidationHorizon === 60 ? '5 years' : '10 years'
+                  }.
+                </p>
+              )}
 
-                  <div
-                    className="significance-verdict"
+              {gradeValidationError && (
+                <div className="error-message">Error: {gradeValidationError}</div>
+              )}
+            </>
+          )}
+
+          {/* Grade Validation Results */}
+          {backtestType === 'grade-validation' && gradeValidationData && !gradeValidationLoading && (
+            <div className="rigorous-results">
+              {/* Overall Verdict */}
+              <div
+                className="overall-verdict"
+                style={{
+                  borderColor: getVerdictColor(gradeValidationData.verdict),
+                  background: `${getVerdictColor(gradeValidationData.verdict)}15`
+                }}
+              >
+                <h4>Grade Validation Result</h4>
+                <div className="verdict-main">
+                  <span
+                    className="verdict-badge"
                     style={{
-                      borderColor: getVerdictColor(rigorousData.statistical_significance.significance),
-                      background: `${getVerdictColor(rigorousData.statistical_significance.significance)}15`
+                      background: getVerdictColor(gradeValidationData.verdict),
+                      color: '#fff'
                     }}
                   >
-                    <span className="sig-label">Result:</span>
-                    <span
-                      className="sig-value"
-                      style={{ color: getVerdictColor(rigorousData.statistical_significance.significance) }}
-                    >
-                      {rigorousData.statistical_significance.significance}
-                    </span>
-                    <span className="sig-detail">
-                      {rigorousData.statistical_significance.significance_detail}
-                    </span>
-                  </div>
+                    {gradeValidationData.verdict}
+                  </span>
+                  <p className="verdict-detail">{gradeValidationData.verdict_detail}</p>
+                </div>
+              </div>
 
-                  <div className="monte-carlo-stats">
-                    <div className="mc-stat">
-                      <span className="mc-label">Strategy Return</span>
-                      <span className={`mc-value ${rigorousData.statistical_significance.results?.strategy_return >= 0 ? 'positive' : 'negative'}`}>
-                        {rigorousData.statistical_significance.results?.strategy_return >= 0 ? '+' : ''}
-                        {rigorousData.statistical_significance.results?.strategy_return}%
-                      </span>
-                    </div>
-                    <div className="mc-stat">
-                      <span className="mc-label">Random Avg Return</span>
-                      <span className="mc-value">
-                        {rigorousData.statistical_significance.results?.random_mean_return}%
-                      </span>
-                    </div>
-                    <div className="mc-stat">
-                      <span className="mc-label">Percentile Rank</span>
-                      <span className="mc-value">
-                        {rigorousData.statistical_significance.results?.percentile}%
-                      </span>
-                    </div>
-                    <div className="mc-stat">
-                      <span className="mc-label">P-Value</span>
-                      <span className={`mc-value ${rigorousData.statistical_significance.results?.p_value < 0.05 ? 'positive' : ''}`}>
-                        {rigorousData.statistical_significance.results?.p_value}
-                      </span>
-                    </div>
+              {/* Summary Stats */}
+              <div className="grade-validation-summary">
+                <h5>Grade Success Rates</h5>
+                <p className="section-note">
+                  "Did stocks graded A/B historically deliver their expected returns?"
+                </p>
+                <div className="grade-success-stats">
+                  <div className="grade-stat">
+                    <span className="grade-label">A Grade Success</span>
+                    <span className={`grade-value ${gradeValidationData.summary?.avg_a_grade_success_rate >= 60 ? 'positive' : gradeValidationData.summary?.avg_a_grade_success_rate >= 50 ? '' : 'negative'}`}>
+                      {gradeValidationData.summary?.avg_a_grade_success_rate || 0}%
+                    </span>
                   </div>
+                  <div className="grade-stat">
+                    <span className="grade-label">B Grade Success</span>
+                    <span className={`grade-value ${gradeValidationData.summary?.avg_b_grade_success_rate >= 60 ? 'positive' : gradeValidationData.summary?.avg_b_grade_success_rate >= 50 ? '' : 'negative'}`}>
+                      {gradeValidationData.summary?.avg_b_grade_success_rate || 0}%
+                    </span>
+                  </div>
+                  <div className="grade-stat primary">
+                    <span className="grade-label">A+B Combined</span>
+                    <span className={`grade-value ${gradeValidationData.summary?.avg_ab_combined_success_rate >= 60 ? 'positive' : gradeValidationData.summary?.avg_ab_combined_success_rate >= 50 ? '' : 'negative'}`}>
+                      {gradeValidationData.summary?.avg_ab_combined_success_rate || 0}%
+                    </span>
+                  </div>
+                </div>
+              </div>
 
-                  <div className="interpretation-box">
-                    <h6>Interpretation</h6>
-                    <ul>
-                      {rigorousData.statistical_significance.interpretation?.map((item, i) => (
-                        <li key={i}>{item}</li>
-                      ))}
-                    </ul>
+              {/* Expected Returns Reference */}
+              <div className="expected-returns-ref">
+                <h6>Expected Returns by Grade ({gradeValidationData.horizon_months}M horizon)</h6>
+                <div className="expected-grid">
+                  {Object.entries(gradeValidationData.expected_returns || {}).map(([grade, pct]) => (
+                    <span key={grade} className={`expected-item grade-${grade.toLowerCase()}`}>
+                      {grade}: {pct >= 0 ? '+' : ''}{pct}%
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Factor Analysis */}
+              {gradeValidationData.factor_analysis && Object.keys(gradeValidationData.factor_analysis).length > 0 && (
+                <div className="factor-analysis-section">
+                  <h5>Factor Correlation Analysis</h5>
+                  <p className="section-note">
+                    Which scoring factors actually predict returns?
+                  </p>
+                  <div className="factor-grid">
+                    {Object.entries(gradeValidationData.factor_analysis).map(([factor, data]) => (
+                      <div
+                        key={factor}
+                        className={`factor-card ${data.predictive_power.toLowerCase().replace(' ', '-')}`}
+                      >
+                        <div className="factor-name">{factor.replace('_', ' ').toUpperCase()}</div>
+                        <div className="factor-correlation">
+                          <span className="corr-label">Correlation:</span>
+                          <span className={`corr-value ${data.correlation >= 0.1 ? 'positive' : data.correlation <= -0.05 ? 'negative' : ''}`}>
+                            r = {data.correlation}
+                          </span>
+                        </div>
+                        <div className="factor-spread">
+                          <span className="spread-label">High vs Low Spread:</span>
+                          <span className={`spread-value ${data.spread >= 0 ? 'positive' : 'negative'}`}>
+                            {data.spread >= 0 ? '+' : ''}{data.spread}%
+                          </span>
+                        </div>
+                        <div className="factor-power">
+                          <span
+                            className={`power-badge ${data.predictive_power.toLowerCase().replace(' ', '-')}`}
+                          >
+                            {data.predictive_power}
+                          </span>
+                        </div>
+                        <div className="factor-details">
+                          <span>High: {data.high_score_avg_return}%</span>
+                          <span>Low: {data.low_score_avg_return}%</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
+                </div>
+              )}
+
+              {/* Period Breakdown */}
+              {gradeValidationData.period_results && (
+                <div className="period-breakdown">
+                  <h5>Results by Test Period</h5>
+                  <div className="period-cards">
+                    {Object.entries(gradeValidationData.period_results).map(([period, data]) => (
+                      <div key={period} className="period-card">
+                        <h6>{period} Ago</h6>
+                        <div className="period-dates">
+                          {data.period_start} to {data.period_end}
+                        </div>
+                        <div className="period-stats">
+                          <div className="ps-row">
+                            <span>Test Points:</span>
+                            <span>{data.test_points}</span>
+                          </div>
+                          {data.a_and_b_combined && (
+                            <>
+                              <div className="ps-row">
+                                <span>A+B Picks:</span>
+                                <span>{data.a_and_b_combined.count}</span>
+                              </div>
+                              <div className="ps-row highlight">
+                                <span>Success Rate:</span>
+                                <span className={data.a_and_b_combined.success_rate >= 60 ? 'positive' : data.a_and_b_combined.success_rate >= 50 ? '' : 'negative'}>
+                                  {data.a_and_b_combined.success_rate}%
+                                </span>
+                              </div>
+                              <div className="ps-row">
+                                <span>Beat Benchmark:</span>
+                                <span className={data.a_and_b_combined.beat_benchmark_rate >= 50 ? 'positive' : 'negative'}>
+                                  {data.a_and_b_combined.beat_benchmark_rate}%
+                                </span>
+                              </div>
+                              <div className="ps-row">
+                                <span>Avg Return:</span>
+                                <span className={data.a_and_b_combined.avg_return >= 0 ? 'positive' : 'negative'}>
+                                  {data.a_and_b_combined.avg_return >= 0 ? '+' : ''}{data.a_and_b_combined.avg_return}%
+                                </span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Interpretation */}
+              {gradeValidationData.interpretation && (
+                <div className="interpretation-box">
+                  <h6>Test Summary</h6>
+                  <ul>
+                    {gradeValidationData.interpretation.map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
               {/* Methodology */}
               <div className="rigorous-methodology">
-                <h5>Methodology</h5>
+                <h5>What This Test Does</h5>
                 <ul>
-                  <li><strong>Scoring:</strong> {rigorousData.portfolio_simulation?.methodology?.scoring}</li>
-                  <li><strong>Rebalancing:</strong> {rigorousData.portfolio_simulation?.methodology?.rebalancing}</li>
-                  <li><strong>Benchmark:</strong> {rigorousData.portfolio_simulation?.methodology?.benchmark}</li>
-                  <li><strong>Bias Mitigation:</strong> {rigorousData.portfolio_simulation?.methodology?.bias_mitigation}</li>
+                  <li><strong>Point-in-time scoring:</strong> Uses only data available at each historical date (no look-ahead bias)</li>
+                  <li><strong>Walk-forward:</strong> Tests across multiple historical periods (10Y, 5Y, 2Y, 1Y ago)</li>
+                  <li><strong>Validation metric:</strong> "Did A/B graded stocks achieve their expected returns?"</li>
+                  <li><strong>Benchmark:</strong> Compares against SPY to measure alpha generation</li>
                 </ul>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import RegimeBanner from './components/RegimeBanner.jsx'
 import OptimalScan from './components/OptimalScan.jsx'
 import PredictForm from './components/PredictForm.jsx'
@@ -11,7 +11,15 @@ import CompositeRanking from './components/CompositeRanking.jsx'
 
 function App() {
   const [showAbout, setShowAbout] = useState(false)
-  const [activeTab, setActiveTab] = useState('signals')
+  const [activeTab, setActiveTab] = useState(() => {
+    // Load saved tab from localStorage, default to 'signals'
+    return localStorage.getItem('activeTab') || 'signals'
+  })
+
+  // Save active tab to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab)
+  }, [activeTab])
 
   return (
     <div className="app">
