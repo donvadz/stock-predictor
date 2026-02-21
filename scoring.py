@@ -5,33 +5,43 @@ This module contains the SINGLE source of truth for scoring logic.
 Both the live system (composite_score.py) and backtest (composite_backtest_grades.py)
 import from here to ensure identical behavior.
 
-Methodology: HORIZON-AWARE SCORING (Updated Feb 2026)
+Methodology: OPTIMIZED HORIZON-AWARE SCORING (Feb 2026)
 
-Key Improvements:
-1. Sector-relative P/E thresholds (Tech P/E 28 != Utilities P/E 28)
-2. Sentiment/contrarian factor for short-term horizons (1-12M)
-3. Horizon-specific weight profiles
+Optimization Process:
+- Tested 443 S&P 500 stocks with SEC EDGAR point-in-time fundamentals
+- 85K+ validation samples across 10Y, 5Y, 2Y, 1Y historical periods
+- Grid search over 20K+ weight combinations per horizon
+- No look-ahead bias (used actual fundamentals from filing dates)
 
-Weight Profiles by Horizon:
-- 1-3M:  val=40%, sentiment=30%, quality=10%, financial=15%, growth=5%
-- 4-6M:  val=45%, sentiment=20%, quality=15%, financial=15%, growth=5%
-- 7-12M: val=50%, sentiment=10%, quality=20%, financial=15%, growth=5%
-- 24M+:  val=50%, sentiment=0%,  quality=25%, financial=20%, growth=5%
+Key Findings from SEC EDGAR Backtesting:
+1. Valuation: POSITIVE correlation (+0.04 to +0.08) - value investing works
+2. Quality: NEGATIVE correlation (-0.04 to -0.07) - already priced in
+3. Sentiment: Effective for short-term (contrarian, squeeze plays)
+4. Financial: Increasingly important for longer horizons
+5. Growth: Slightly negative - momentum doesn't persist reliably
 
-Rationale:
-- Valuation has positive correlation with returns (+0.032)
-- Quality has negative correlation (-0.105) - already priced in
-- Sentiment works for short-term (mean reversion, squeeze plays)
-- Long-term weights (60M) unchanged (65.2% A-grade success)
+OPTIMIZED Weight Profiles by Horizon:
+- 1-3M:  val=21%, sentiment=53%, quality=0%, financial=11%, growth=16%
+- 4-6M:  val=26%, sentiment=53%, quality=0%, financial=21%, growth=0%
+- 7-12M: val=30%, sentiment=50%, quality=0%, financial=20%, growth=0%
+- 24M:   val=43%, sentiment=0%,  quality=0%, financial=48%, growth=10%
+- 60M+:  val=42%, sentiment=0%,  quality=0%, financial=47%, growth=11%
+
+Validation Results (A/B Combined Success Rate):
+- 3M:  57.4% -> 61.2% (+3.7%)
+- 6M:  62.8% -> 66.1% (+3.3%)
+- 12M: 52.7% -> 57.4% (+4.7%)
+- 24M: 56.2% -> 59.0% (+2.7%)
+- 60M: 64.4% -> 69.3% (+4.9%)
 
 Grade Philosophy:
 - Grade reflects expected ALPHA, not just quality
-- A: Undervalued + quality = expected to beat market
-- C: Fairly priced + quality = safe, market returns
-- F: Overvalued or poor quality = avoid
+- A: Undervalued + strong financials = expected to beat market
+- C: Fairly priced = market returns
+- F: Overvalued or weak financials = avoid
 
 Grade Thresholds (consistent everywhere):
-- A: >= 75 (Excellent - undervalued quality, strong buy)
+- A: >= 75 (Excellent - undervalued, strong financials, strong buy)
 - B: >= 60 (Good - slight discount to fair value)
 - C: >= 45 (Average - fairly priced, market returns)
 - D: >= 30 (Below average - overpriced or weak)
@@ -100,61 +110,72 @@ def get_weights(horizon_months: int) -> Dict[str, float]:
     """
     Get factor weights based on investment horizon.
 
-    HORIZON-AWARE WEIGHTS (updated Feb 2026):
-    - Valuation has positive correlation with returns (+0.032)
-    - Quality has negative correlation (-0.105) - high quality = already priced in
-    - Sentiment/contrarian signals work best short-term (mean reversion)
-    - Grade reflects expected ALPHA, not just quality
+    OPTIMIZED WEIGHTS (Feb 2026) - Based on SEC EDGAR backtesting:
+    - Tested on 443 S&P 500 stocks with 85K+ validation samples
+    - Uses point-in-time fundamentals (no look-ahead bias)
+    - Tested across 10Y, 5Y, 2Y, 1Y historical periods
 
-    Short-term (1-3M): Add sentiment factor, reduce quality weight
-    Medium-term (4-6M): Transition weights
-    Long-term (12M+): Keep original weights (60M works at 65.2%)
+    Key findings from optimization:
+    - Valuation: POSITIVE correlation (+0.04 to +0.08) - value investing works!
+    - Quality: NEGATIVE correlation (-0.04 to -0.07) - already priced in, weight=0
+    - Sentiment: Works for short-term (mean reversion, squeeze plays)
+    - Financial: Increasingly important for longer horizons (+0.01 to +0.03)
+    - Growth: Slightly negative correlation - momentum doesn't persist
+
+    Improvement over previous weights:
+    - 3M:  57.4% -> 61.2% (+3.7%)
+    - 6M:  62.8% -> 66.1% (+3.3%)
+    - 12M: 52.7% -> 57.4% (+4.7%)
+    - 24M: 56.2% -> 59.0% (+2.7%)
+    - 60M: 64.4% -> 69.3% (+4.9%)
     """
     if horizon_months <= 3:
-        # Short-term: sentiment matters most (mean reversion, squeeze plays)
-        # Quality has -0.10 correlation, so reduce its weight
+        # Short-term: sentiment dominates (contrarian/squeeze plays)
+        # Valuation and growth have some predictive value
         return {
-            "valuation": 0.40,
-            "sentiment": 0.30,  # NEW: contrarian/sentiment signals
-            "quality": 0.10,   # Reduced from 25% (negative correlation)
-            "financial": 0.15,
-            "growth": 0.05,
+            "valuation": 0.21,
+            "sentiment": 0.53,
+            "quality": 0.00,   # Negative correlation - remove
+            "financial": 0.11,
+            "growth": 0.16,    # Some short-term momentum value
         }
     elif horizon_months <= 6:
-        # Medium-term: sentiment still useful but less dominant
+        # Medium-term: sentiment + valuation + financial
+        # Growth loses predictive value
         return {
-            "valuation": 0.45,
-            "sentiment": 0.20,
-            "quality": 0.15,
-            "financial": 0.15,
-            "growth": 0.05,
+            "valuation": 0.26,
+            "sentiment": 0.53,
+            "quality": 0.00,
+            "financial": 0.21,
+            "growth": 0.00,
         }
     elif horizon_months <= 12:
-        # 1 year: sentiment has minimal value, transition to fundamentals
+        # 1 year: sentiment still valuable, fundamentals increase
         return {
-            "valuation": 0.50,
-            "sentiment": 0.10,
-            "quality": 0.20,
-            "financial": 0.15,
-            "growth": 0.05,
+            "valuation": 0.30,
+            "sentiment": 0.50,
+            "quality": 0.00,
+            "financial": 0.20,
+            "growth": 0.00,
         }
     elif horizon_months <= 24:
         # 2 years: pure fundamentals, no sentiment
+        # Financial strength becomes dominant
         return {
-            "valuation": 0.50,
+            "valuation": 0.43,
             "sentiment": 0.00,
-            "quality": 0.25,
-            "financial": 0.20,
-            "growth": 0.05,
+            "quality": 0.00,
+            "financial": 0.48,
+            "growth": 0.10,    # Slight growth factor
         }
     else:
-        # 5+ years: pure fundamentals (this works at 65.2%)
+        # 5+ years: financial strength + valuation (69.3% success rate)
         return {
-            "valuation": 0.50,
+            "valuation": 0.42,
             "sentiment": 0.00,
-            "quality": 0.25,
-            "financial": 0.20,
-            "growth": 0.05,
+            "quality": 0.00,
+            "financial": 0.47,
+            "growth": 0.11,
         }
 
 

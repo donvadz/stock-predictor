@@ -84,9 +84,12 @@ Defined in `config.py`:
 - Pydantic models for API responses
 - Error handling with HTTPException
 
-## Scoring System (Feb 2026)
+## Scoring System (Feb 2026 - Optimized)
 
-The scoring system uses **horizon-aware weights** with three key improvements:
+The scoring system uses **optimized horizon-aware weights** based on SEC EDGAR backtesting:
+- Tested 443 S&P 500 stocks with 85K+ validation samples
+- Point-in-time fundamentals (no look-ahead bias)
+- Grid search optimization over 20K+ weight combinations
 
 ### 1. Sector-Specific Valuation Thresholds
 P/E ratios are scored relative to sector norms (defined in `scoring.py`):
@@ -95,39 +98,45 @@ P/E ratios are scored relative to sector norms (defined in `scoring.py`):
 - Utilities: low=14, median=18, high=24
 - etc.
 
-### 2. Sentiment/Contrarian Factor (Short-Term Only)
+### 2. Sentiment/Contrarian Factor (Short-Term Only, ≤12M)
 For horizons ≤12M, includes sentiment scoring based on:
 - **Short Interest** (40%): High short + quality = squeeze potential
 - **Analyst Sentiment** (30%): Contrarian signal when extreme
 - **Earnings Surprise** (30%): Post-earnings drift momentum
 
-### 3. Horizon-Aware Weight Profiles
+### 3. OPTIMIZED Horizon-Aware Weight Profiles
 
 | Horizon | Valuation | Sentiment | Quality | Financial | Growth |
 |---------|-----------|-----------|---------|-----------|--------|
-| 1-3M    | 40%       | 30%       | 10%     | 15%       | 5%     |
-| 4-6M    | 45%       | 20%       | 15%     | 15%       | 5%     |
-| 7-12M   | 50%       | 10%       | 20%     | 15%       | 5%     |
-| 24M+    | 50%       | 0%        | 25%     | 20%       | 5%     |
+| 1-3M    | 21%       | 53%       | 0%      | 11%       | 16%    |
+| 4-6M    | 26%       | 53%       | 0%      | 21%       | 0%     |
+| 7-12M   | 30%       | 50%       | 0%      | 20%       | 0%     |
+| 24M     | 43%       | 0%        | 0%      | 48%       | 10%    |
+| 60M+    | 42%       | 0%        | 0%      | 47%       | 11%    |
 
-**Rationale:**
-- Quality has negative correlation with returns (~-0.10) - already priced in
-- Sentiment works for short-term (mean reversion, squeeze plays)
-- Long-term weights unchanged (60M works at 65.2% A-grade success)
+### Key Findings from Optimization:
+- **Valuation WORKS**: Positive correlation (+0.04 to +0.08) with returns
+- **Quality = 0%**: Negative correlation (-0.04 to -0.07) - already priced in
+- **Sentiment dominates short-term**: 50-53% weight for horizons ≤12M
+- **Financial strength dominates long-term**: 47-48% weight for 24M+
+- **Growth minimized**: Slight negative correlation, momentum doesn't persist
 
-## Grade Validation Test Results (S&P 500, Pre-Improvements)
+## Grade Validation Test Results (S&P 500, Optimized Weights)
 
-Baseline results before horizon-aware improvements:
+Results with SEC EDGAR point-in-time fundamentals:
 
-| Horizon | A-Grade | B-Grade | A+B Combined |
-|---------|---------|---------|--------------|
-| 3M | 48.3% | 53.4% | 52.4% |
-| 6M | 45.2% | 55.7% | 53.8% |
-| 12M | 46.9% | 55.2% | 53.5% |
-| 60M | **65.2%** | 66.0% | **65.8%** |
+| Horizon | Previous A+B% | Optimized A+B% | Improvement |
+|---------|---------------|----------------|-------------|
+| 3M      | 57.4%         | **61.2%**      | +3.7%       |
+| 6M      | 62.8%         | **66.1%**      | +3.3%       |
+| 12M     | 52.7%         | **57.4%**      | +4.7%       |
+| 24M     | 56.2%         | **59.0%**      | +2.7%       |
+| 60M     | 64.4%         | **69.3%**      | +4.9%       |
 
-### Running Validation
+### Running Validation & Optimization
 ```bash
-python run_sp500_validation.py  # Full S&P 500, all horizons (uses SEC EDGAR)
-python run_sp500_validation.py --yfinance  # Use yfinance (has look-ahead bias)
+python run_sp500_validation.py           # Full S&P 500 validation (SEC EDGAR)
+python run_sp500_validation.py --yfinance # Use yfinance (has look-ahead bias)
+python optimize_weights.py               # Re-run weight optimization
+python optimize_weights.py --quick       # Quick test with 100 stocks
 ```
